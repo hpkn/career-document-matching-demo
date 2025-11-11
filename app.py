@@ -1,104 +1,200 @@
 # app.py
-import shutil
+import os
+import json
+import uuid
 from pathlib import Path
-
+from typing import List, Dict, Any
 import streamlit as st
-
-from config import PDF_DIR, INDEX_DIR
-from ingest import build_and_save_index
-from rag import get_raw_facts
+import pandas as pd
+from config import PDF_DIR, DATA_DIR # DATA_DIR 추가
+from ingest import build_index, clear_pdfs, clear_index # clear_index 임포트
+from rag import get_raw_project_data
+from semantic_normalizer import normalize_project
 from rules_engine import apply_all_checkbox_rules
+from report_utils import group_rules_by_category, build_project_summary_text, get_form_layout
 
 
-def save_uploaded_files(uploaded_files, target_dir: Path):
-    target_dir.mkdir(parents=True, exist_ok=True)
-    for f in uploaded_files:
-        dest = target_dir / f.name
-        with dest.open("wb") as out:
-            out.write(f.read())
-        st.write(f"📄 Saved: {dest.name}")
+st.set_page_config(page_title="경력인정 자동완성 데모", layout="wide")
+
+st.title("경력인정 자동완성 Demo")
+
+st.markdown("""
+이 데모는 **업무 관련 PDF 파일**을 기반으로 프로젝트 경력을 추출하고,  
+경력인정 가이드에 따라 **자동으로 체크박스를 판단**해 주는 시스템의 프로토타입입니다.
+
+- 좌측: 파일 업로드 및 분석
+- 우측: AI 추출 결과와 자동 체크 결과 요약
+""")
 
 
-def main():
-    st.set_page_config(page_title="경력인정 자동완성 데모", page_icon="🧾", layout="wide")
-    st.title("🧾 경력인정 자동완성 데모 (RAG + Rules + Ollama)")
+# --- Sidebar: file upload & ingest ---------------------------------
+st.sidebar.header("1. 분석할 파일 업로드")
+st.sidebar.caption("여기에 프로젝트 파일(계약서, 공고 등)을 업로드하세요. 업로드 즉시 AI 메모리가 생성됩니다.")
 
-    st.markdown(
-        """
-이 데모는 **PDF로부터 경력 데이터를 추출(RAG)** 하고,  
-**규칙 엔진으로 체크박스를 자동 판정**하는 PoC입니다.  
-모든 처리는 로컬 머신에서 수행되며, LLM은 **Ollama**를 사용합니다.
-"""
-    )
+uploaded_files = st.sidebar.file_uploader(
+    "파일 업로드 (이전 파일은 삭제됩니다)",
+    type=["pdf"],
+    accept_multiple_files=True,
+    label_visibility="collapsed"
+)
 
-    # ---------------------------
-    # 1) PDF 업로드 및 인덱싱
-    # ---------------------------
-    st.header("1️⃣ PDF 업로드 및 인덱싱 (Ingest)")
-
-    uploaded_pdfs = st.file_uploader(
-        "비즈니스 관련 PDF 파일을 업로드하세요 (여러 개 가능)",
-        type=["pdf"],
-        accept_multiple_files=True,
-    )
-
-    col_ingest_btn, col_clear = st.columns(2)
-
-    with col_ingest_btn:
-        if st.button("📥 인덱스 생성 / 재생성 (Ingest 실행)"):
-            if not uploaded_pdfs:
-                st.warning("먼저 PDF 파일을 업로드하세요.")
-            else:
-                # Clear old PDFs
-                for old_pdf in PDF_DIR.glob("*.pdf"):
-                    old_pdf.unlink()
-
-                st.write(f"📁 업로드한 PDF를 {PDF_DIR} 에 저장합니다...")
-                save_uploaded_files(uploaded_pdfs, PDF_DIR)
-
-                with st.spinner("PDF 텍스트 추출 및 벡터 인덱스 생성 중..."):
-                    build_and_save_index()
-                st.success("✅ 인덱스 생성 완료!")
-
-    with col_clear:
-        if st.button("🧹 기존 인덱스 삭제"):
-            if INDEX_DIR.exists():
-                shutil.rmtree(INDEX_DIR)
-            INDEX_DIR.mkdir(parents=True, exist_ok=True)
-            st.success("✅ 인덱스 디렉토리를 초기화했습니다.")
-
-    st.markdown("---")
-
-    # ---------------------------
-    # 2) 경력 자동 계산 (RAG + Rules)
-    # ---------------------------
-    st.header("2️⃣ 경력 자동 계산 (RAG + Rules Engine)")
-
-    query_default = "모든 프로젝트 이력을 JSON 형식으로 추출"
-    user_query = st.text_input(
-        "질의어 (Query)",
-        value=query_default,
-        help="RAG 검색에 사용할 한글 질의입니다.",
-    )
-
-    if st.button("🧠 경력 자동 추출 및 체크박스 판정"):
-        with st.spinner("AI가 파일을 분석하고 규칙을 적용하는 중입니다..."):
-            try:
-                raw_facts = get_raw_facts(user_query)
-                rules_df = apply_all_checkbox_rules(raw_facts)
-            except Exception as e:
-                st.error(f"에러 발생: {e}")
-                return
-
-        st.subheader("🔍 AI가 추출한 원본 프로젝트 이력 (Raw JSON)")
-        st.json(raw_facts)
-
-        st.subheader("✅ 체크된 규칙 ID (요약)")
-        st.dataframe(rules_df[["project_name", "client", "checked_rule_ids"]])
-
-        st.subheader("📊 전체 상세 결과 (모든 rule__ 컬럼 포함)")
-        st.dataframe(rules_df)
+# This block now cleans, saves, AND builds the index all at once.
+if uploaded_files:
+    saved_files_map = {} # UUID와 원본 이름을 매핑할 딕셔너리
+    with st.spinner("파일을 처리하고 AI 메모리를 생성하는 중..."):
+        
+        # 1. Clear all old PDFs AND the old index
+        clear_pdfs()
+        clear_index() # 인덱스도 함께 삭제
+        
+        # 2. Save new files with UUID names
+        for f in uploaded_files:
+            original_name = f.name
+            file_extension = Path(original_name).suffix
+            
+            # --- FIX: Create a short, unique filename ---
+            safe_name = f"{uuid.uuid4().hex}{file_extension}"
+            save_path = PDF_DIR / safe_name
+            
+            with open(save_path, "wb") as out:
+                out.write(f.read())
+            
+            saved_files_map[safe_name] = original_name # 맵에 저장
+        
+        # 3. Save the name map for the ingest script
+        map_save_path = DATA_DIR / "uuid_name_map.json"
+        with open(map_save_path, "w", encoding="utf-8") as f_map:
+            json.dump(saved_files_map, f_map, ensure_ascii=False, indent=2)
+            
+        # 4. Build new index immediately
+        build_index()
+    
+    st.sidebar.success(f"{len(saved_files_map)}개 파일로 AI 메모리 생성 완료.")
+    st.sidebar.info("이제 '분석 실행' 버튼을 누르세요.")
 
 
-if __name__ == "__main__":
-    main()
+# This button is now combined in the uploader
+# if st.sidebar.button("인덱스 다시 만들기 (FAISS 재구성)"):
+#     with st.spinner("PDF를 읽고 인덱스를 생성 중입니다..."):
+#         build_index()
+#     st.sidebar.success("인덱스 재구성이 완료되었습니다.")
+
+
+st.sidebar.header("2. 분석 실행")
+st.sidebar.caption("업로드된 파일의 내용을 종합하여 양식을 채웁니다.")
+
+run_button = st.sidebar.button("✔️ 양식 자동 채우기 실행")
+
+
+# --- Main action ----------------------------------------------------
+if run_button:
+    try:
+        with st.spinner("AI가 문서를 분석하고 경력을 추출 중입니다... 잠시만 기다려 주세요."):
+            query = "모든 프로젝트 이력을 하나의 JSON 객체로 종합"
+            raw_project_data: Dict[str, Any] = get_raw_project_data(query)
+
+        if not raw_project_data:
+            st.error("추출된 프로젝트 이력이 없습니다. PDF 파일을 업로드했는지 확인해 주세요.")
+        else:
+            normalized_project = normalize_project(raw_project_data)
+
+            project_rules_series: pd.Series = apply_all_checkbox_rules(normalized_project)
+
+            st.subheader("실제 양식과 비슷한 체크박스 화면")
+            st.caption("프로젝트 정보를 기반으로 '경력인정 적용 가이드' 양식에 자동 체크한 결과입니다.")
+
+            form_layout = get_form_layout()
+            grouped_rules = group_rules_by_category()
+
+            def render_checkbox_row(checked: bool, label: str) -> str:
+                box = "☑" if checked else "☐"
+                return f"{box} {label}"
+
+            st.markdown("---")
+            
+            project_name = project_rules_series.get("project_name") or "(사업명 없음)"
+            client_raw = project_rules_series.get("client_raw") or project_rules_series.get("client") or "(발주처 정보 없음)"
+            client_type = project_rules_series.get("client_type") or "정보 없음"
+            role = project_rules_series.get("role") or "(담당업무 정보 없음)"
+            start_date = project_rules_series.get("start_date") or "-"
+            end_date = project_rules_series.get("end_date") or "-"
+            use_date_type = project_rules_series.get("use_date_type") or "-"
+
+            date_label_map = {
+                "participation": "참여일 기준",
+                "recognition": "인정일 기준",
+                "-": "기준일 정보 없음",
+                "": "기준일 정보 없음",
+            }
+            date_label = date_label_map.get(use_date_type, f"{use_date_type} 기준")
+
+            st.markdown(
+                f"""
+    **📌 프로젝트 기본 정보**
+
+    - 사업명: **{project_name}**
+    - 발주처: **{client_raw}** (분류: {client_type})
+    - 담당업무: **{role}**
+    - 참여기간: **{start_date} ~ {end_date}**
+    - 평가 기준 일자: **{date_label}**
+    """
+            )
+            st.markdown("")
+
+            for section_key, section in form_layout.items():
+                st.markdown(f"#### 🧾 {section['title']}")
+
+                for q in section["questions"]:
+                    st.markdown(f"**{q['title']}**")
+
+                    options = q["options"]
+                    num_cols = min(len(options), 4) 
+                    cols = st.columns(num_cols)
+
+                    for i, opt in enumerate(options):
+                        col = cols[i % num_cols]
+                        rid = opt["rule_id"]
+                        col_name = f"rule__{rid}"
+                        checked = bool(project_rules_series.get(col_name, False)) 
+                        with col:
+                            st.markdown(render_checkbox_row(checked, opt["label"]))
+
+                    st.markdown("") 
+
+            with st.expander("텍스트 형식 요약 보기 (옵션)", expanded=False):
+                summary_text = build_project_summary_text(
+                    project_rules_series,
+                    grouped_rules,
+                    show_only_checked=True,
+                )
+                st.markdown(f"```text\n{summary_text}\n```")
+
+            export_text = build_project_summary_text(
+                project_rules_series, 
+                grouped_rules, 
+                show_only_checked=True
+            )
+
+            st.download_button(
+                label="📥 텍스트 리포트 다운로드 (백업용)",
+                data=export_text,
+                file_name="경력인정_자동판정_리포트.txt",
+                mime="text/plain",
+            )
+            
+    except RuntimeError as e:
+        if "No such file or directory" in str(e):
+            st.error("FAISS 인덱스 파일을 찾을 수 없습니다. 먼저 PDF 파일을 업로드해주세요.")
+        else:
+            st.error(f"오류 발생: {e}")
+    except Exception as e:
+        st.error(f"예상치 못한 오류 발생: {e}")
+
+else:
+    st.info("좌측 사이드바에서 PDF를 업로드하면 분석이 시작됩니다.")
+    
+    
+    
+    # $75.00 -> 1 million Tokens
+    # $0.002 per 1K tokens
+    

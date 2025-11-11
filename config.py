@@ -7,7 +7,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 
 RAW_UPLOAD_DIR = DATA_DIR / "uploads_raw"   # HWP/PDF as uploaded
-PDF_DIR = DATA_DIR / "source_pdfs"          # PDFs used for ingestion
+PDF_DIR = DATA_DIR / "pdfs"          # PDFs used for ingestion
 INDEX_DIR = DATA_DIR / "faiss_index"        # FAISS index
 
 # Ensure directories exist
@@ -28,5 +28,6 @@ INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:27b")
+
 

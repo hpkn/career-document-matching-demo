@@ -7,23 +7,49 @@ from rules_config import CHECKBOX_RULES
 
 
 def _normalize_text(value: Any) -> str:
-    """None, 숫자 등 어떤 값이 와도 비교하기 좋게 문자열로 정리."""
+    """
+    --- THIS IS THE MISSING FUNCTION ---
+    Safely converts any value to a normalized string.
+    """
     if value is None:
         return ""
     return str(value).strip()
 
 
 def _eval_rule_logic(project: Dict[str, Any], logic: Dict[str, Any]) -> bool:
-    """한 프로젝트에 대해 하나의 규칙이 적용되는지 판단."""
+    """
+    Checks if a project dictionary matches a given rule logic.
+    Handles both single strings and lists of strings.
+    """
     logic_type = logic.get("type")
 
     if logic_type == "keyword_any":
-        field = logic["field"]
+        field_name = logic["field"]
         keywords = logic["keywords"]
-        value = _normalize_text(project.get(field, ""))
-        # 대소문자 섞일 수 있으니 소문자로 비교 (한글은 그대로여도 괜찮음)
-        lower_value = value.lower()
-        return any(kw.lower() in lower_value for kw in keywords)
+        value = project.get(field_name) # Get the value (could be string or list)
+
+        # --- Multi-Select Logic ---
+        if isinstance(value, list):
+            # Handle list fields (like 'roles' or 'original_fields')
+            # Check if *any* keyword matches *any* item in the list
+            value_list = [_normalize_text(v).lower() for v in value]
+            keywords_lower = [kw.lower() for kw in keywords]
+            
+            for item in value_list:
+                for kw in keywords_lower:
+                    if kw in item: # Check if keyword is in the item
+                        return True
+            return False # No keyword matched any item
+        
+        elif isinstance(value, (str, int, float)):
+            # Handle single string fields (like 'project_name' or 'client')
+            value_str = _normalize_text(value).lower()
+            return any(kw.lower() in value_str for kw in keywords)
+        
+        else:
+            # Handle None or other types
+            return False
+        # --- End of Multi-Select Logic ---
 
     if logic_type == "field_value":
         field = logic["field"]
@@ -31,32 +57,29 @@ def _eval_rule_logic(project: Dict[str, Any], logic: Dict[str, Any]) -> bool:
         actual = _normalize_text(project.get(field, ""))
         return actual == expected
 
-    # TODO: regex, range 등 추가 가능
     return False
 
 
-def apply_all_checkbox_rules(raw_projects: List[Dict[str, Any]]) -> pd.DataFrame:
+def apply_all_checkbox_rules(normalized_project: Dict[str, Any]) -> pd.Series:
     """
-    각 프로젝트에 대해:
-      - 모든 규칙을 평가
-      - rule__<id> 컬럼에 True/False 저장
-      - checked_rule_ids 에 체크된 규칙 id들 모아두기
+    normalized_project: A SINGLE project dict (already normalized)
+    Returns: A single pd.Series with original fields + rule__* columns
     """
-    rows = []
+    if not normalized_project:
+        return pd.Series(dtype=object)
 
-    for p in raw_projects:
-        row = copy.deepcopy(p)
+    row = copy.deepcopy(normalized_project)
+    checked_ids = []
 
-        checked_ids = []
-        for rule in CHECKBOX_RULES:
-            rid = rule["id"]
-            is_checked = _eval_rule_logic(p, rule["logic"])
-            row[f"rule__{rid}"] = bool(is_checked)
-            if is_checked:
-                checked_ids.append(rid)
+    for rule in CHECKBOX_RULES:
+        rid = rule["id"]
+        # This call to _eval_rule_logic requires _normalize_text to exist
+        is_checked = _eval_rule_logic(row, rule["logic"])
+        col_name = f"rule__{rid}"
+        row[col_name] = bool(is_checked)
+        if is_checked:
+            checked_ids.append(rid)
 
-        row["checked_rule_ids"] = ", ".join(checked_ids)
-        rows.append(row)
-
-    df = pd.DataFrame(rows)
-    return df
+    row["checked_rule_ids"] = ", ".join(checked_ids)
+    
+    return pd.Series(row)

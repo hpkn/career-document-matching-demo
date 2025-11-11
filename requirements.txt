@@ -10,3 +10,5 @@ pandas
 openai
 olefile 
 reportlab
+requests
+langchain-huggingface # <-- ADD THIS LINE
