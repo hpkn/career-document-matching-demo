@@ -186,7 +186,7 @@ CHECKBOX_RULES = [
     { "id": "duty_field2.duty.detailed_design", "label": "직무분야2 / 담당업무 / 실시설계", "category": "상주 직무분야2", "group": "담당업무", "logic": { "type": "keyword_any", "field": "roles", "keywords": ["실시설계"] } },
     { "id": "duty_field2.duty.feasibility_study", "label": "직무분야2 / 담당업무 / 타당성조사", "category": "상주 직무분야2", "group": "담당업무", "logic": { "type": "keyword_any", "field": "roles", "keywords": ["타당성조사"] } },
     { "id": "duty_field2.duty.technical_advice", "label": "직무분야2 / 담당업무 / 기술자문", "category": "상주 직무분야2", "group": "담당업무", "logic": { "type": "keyword_any", "field": "roles", "keywords": ["기술자문"] } },
-    { "id": "duty_field2.duty.safety_inspection", "label": "직무분야2 / 담당업무 / 안전점검", "category": "상주 직무분야2", "group": "담당업무", "logic": { "type": "keyword_any", "field": "role", "keywords": ["안전점검"] } },
+    { "id": "duty_field2.duty.safety_inspection", "label": "직무분야2 / 담당업무 / 안전점검", "category": "상주 직무분야2", "group": "담당업무", "logic": { "type": "keyword_any", "field": "roles", "keywords": ["안전점검"] } },
     { "id": "duty_field2.duty.detailed_safety", "label": "직무분야2 / 담당업무 / 정밀안전진단", "category": "상주 직무분야2", "group": "담당업무", "logic": { "type": "keyword_any", "field": "roles", "keywords": ["정밀안전진단"] } },
 
     { "id": "duty_field2.recognition.include_blank_field", "label": "직무분야2 / 공종 빈칸도 적용", "category": "상주 직무분야2", "group": "경력 인정사항", "logic": { "type": "field_value", "field": "duty_field2_recognition_rule", "equals": "include_blank_field" } },

@@ -1,16 +1,33 @@
-# semantic_normalizer.py
 from typing import List, Dict, Any
 
-def _norm(text):
+def _norm(text) -> str:
+    """
+    텍스트를 정규화하여 안전한 문자열로 변환
+
+    Args:
+        text: 정규화할 값 (any type)
+
+    Returns:
+        정규화된 문자열 (None은 빈 문자열로 변환)
+    """
     if text is None:
         return ""
     return str(text).strip()
 
 # --- 1) 발주처 분류 ---
 def classify_client_type(client_raw: str) -> str:
+    """
+    발주처 이름으로부터 발주처 유형을 분류
+
+    Args:
+        client_raw: 발주처 원본 이름
+
+    Returns:
+        발주처 분류 (국가, 광역자치단체, 기초자치단체, 정부투자기관, 민간, 기타)
+    """
     if not client_raw:
         return "기타"
-    s = client_raw.replace(" ", "").split(" ")[0] 
+    s = client_raw.replace(" ", "") 
 
     if any(k in s for k in ["기초자치단체", "시청", "구청", "군청", "군"]): 
         return "기초자치단체"
@@ -30,7 +47,16 @@ def classify_client_type(client_raw: str) -> str:
 # --- 3) 평가 방식 및 규칙 추론 (DEMO LOGIC) ---
 def infer_logic_fields(project: Dict[str, Any]) -> Dict[str, Any]:
     """
-    AI가 제공한 'primary' 필드를 기반으로 논리 필드를 설정합니다.
+    AI가 제공한 'primary' 필드를 기반으로 논리 필드를 설정
+
+    프로젝트의 주요 공종(primary_original_field)을 기반으로
+    직무분야, 전문분야, 평가방법 등을 자동으로 추론합니다.
+
+    Args:
+        project: 정규화된 프로젝트 딕셔너리
+
+    Returns:
+        추론된 논리 필드 딕셔너리
     """
     logic_fields = {}
     

@@ -1,9 +1,19 @@
-# report_utils.py
+"""
+Report generation and calculation utilities.
+
+This module provides:
+- Form layout definitions for UI rendering
+- Project summary text generation
+- Career calculation logic (days, months, years, scoring)
+- Aggregation of multiple projects for final report
+"""
 from typing import Dict, Any, List
 import pandas as pd
 from rules_config import CHECKBOX_RULES
+from datetime import datetime
 
 # ---- 1. Logical form layout (mirrors the paper form) ----
+# (기존 FORM_LAYOUT... 생략)
 FORM_LAYOUT = {
     "상주 해당분야": {
         "title": "상주 해당분야",
@@ -428,3 +438,356 @@ def build_project_summary_text(
     if not any_checked:
         lines.append("(체크된 항목이 없습니다.)")
     return "\n".join(lines)
+
+
+# --- [새로 추가된 헬퍼 함수] ---
+
+def _parse_date(date_str: str) -> datetime | None:
+    """
+    날짜 문자열을 datetime 객체로 변환
+
+    지원 형식:
+    - YYYY-MM-DD (예: 2023-01-15)
+    - YY.MM.DD (예: 95.01.23)
+    - YYYY-MM (예: 2013-11) → YYYY-MM-01로 변환
+    - YY.MM (예: 95.01) → YYYY-MM-01로 변환
+
+    Args:
+        date_str: 날짜 문자열
+
+    Returns:
+        datetime 객체 또는 None (파싱 실패시)
+    """
+    if not date_str or not isinstance(date_str, str):
+        return None
+
+    date_str = date_str.strip()
+    if not date_str:
+        return None
+
+    try:
+        # YYYY-MM-DD 형식 시도
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        try:
+            # YY.MM.DD 형식 시도 (예: 95.01.23)
+            dt = datetime.strptime(date_str, "%y.%m.%d")
+            # 19xx년과 20xx년을 구분 (70년 기준)
+            if dt.year > datetime.now().year:
+                dt = dt.replace(year=dt.year - 100)  # 19xx
+            return dt
+        except ValueError:
+            try:
+                # YYYY-MM 형식 시도 (예: 2013-11)
+                dt = datetime.strptime(date_str, "%Y-%m")
+                return dt.replace(day=1)  # 1일로 설정
+            except ValueError:
+                try:
+                    # YY.MM 형식 시도 (예: 95.01)
+                    dt = datetime.strptime(date_str, "%y.%m")
+                    if dt.year > datetime.now().year:
+                        dt = dt.replace(year=dt.year - 100)
+                    return dt.replace(day=1)
+                except ValueError:
+                    # 파싱 실패 시 로그 출력 (디버깅용)
+                    print(f"[WARN] 날짜 파싱 실패: {date_str}")
+                    return None
+
+def _calculate_days(start_str: str, end_str: str) -> int:
+    """
+    시작일과 종료일 사이의 일수 계산 (종료일 포함)
+
+    Args:
+        start_str: 시작일 문자열
+        end_str: 종료일 문자열
+
+    Returns:
+        일수 (종료일 포함, 유효하지 않은 경우 0)
+    """
+    start_date = _parse_date(start_str)
+    end_date = _parse_date(end_str)
+
+    if not start_date or not end_date:
+        return 0
+
+    if end_date < start_date:
+        print(f"[WARN] 종료일이 시작일보다 이릅니다: {start_str} ~ {end_str}")
+        return 0
+
+    return (end_date - start_date).days + 1  # 종료일 포함 +1
+
+def _days_to_months(days: int) -> int:
+    """
+    일수를 개월로 변환
+
+    변환 공식: round(days / 30.6)
+    (30.6은 평균 월 일수로 1년 = 365.25일 / 12개월)
+
+    Args:
+        days: 일수
+
+    Returns:
+        개월 수 (정수)
+    """
+    if days <= 0:
+        return 0
+    return round(days / 30.6)
+
+def _days_to_year_month_str(total_days: int) -> str:
+    """
+    일수를 'X년 Y월' 문자열로 변환
+
+    Args:
+        total_days: 총 일수
+
+    Returns:
+        'X년 Y월' 형식의 문자열
+    """
+    if total_days <= 0:
+        return "0년 0월"
+    total_months = _days_to_months(total_days)
+    years = total_months // 12
+    months = total_months % 12
+    return f"{years}년 {months}월"
+
+# --- [수정된 메인 계산 함수] ---
+
+def get_project_calculations(projects_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    AI가 추출한 *여러 프로젝트(DataFrame)*를 기반으로
+    사용자가 요청한 PDF 양식의 계산을 *합산*하여 UI용 딕셔너리를 반환합니다.
+    """
+    
+    # --- 1. 집계 변수 초기화 ---
+    total_score_days = 0
+    total_job_days = 0 # 직무분야는 100% 가중치
+    relevant_list = []
+    other_list = []
+    all_project_records_str = []
+    all_roles = set()
+    
+    if projects_df.empty:
+        # 프로젝트가 하나도 없으면 빈 템플릿 반환
+        return {
+            "career_details": {
+                "성명": "(정보 없음)", "분야": "(정보 없음)", "현재까지 경력": "0년 0월",
+                "평점": "0점", "total_score_months": 0, "해당분야 용역참여실적": [],
+                "해당분야 이외 참여실적": [], "classification_label": "정보 없음", "weight": 0
+            },
+            "job_field_details": {
+                "책임건설사업관리기술인": "(정보 없음)", "직무분야": "", "현재까지 경력": "0년 0월",
+                "평점": "0점", "total_job_months": 0, "용역참여실적": []
+            }
+        }
+
+    # --- 2. DataFrame을 반복하며 모든 프로젝트 합산 ---
+    for _, project_series in projects_df.iterrows():
+        # AI 추출 데이터 가져오기
+        start_date = project_series.get("start_date", "")
+        end_date = project_series.get("end_date", "")
+        project_name = project_series.get("project_name", "(사업명 없음)")
+        client = project_series.get("client_raw", "(발주처 없음)")
+        roles = project_series.get("roles", [])
+        
+        # 100% vs 60% 분류 로직 (규칙 기반)
+        is_60_percent_rule = project_series.get("recognition_rate_rule") == "civil_60"
+        weight = 0.6 if is_60_percent_rule else 1.0
+
+        # 실제 참여 일수 계산
+        actual_days = _calculate_days(start_date, end_date)
+        
+        # 가중치를 적용한 '환산 일수'
+        score_days = round(actual_days * weight)
+        
+        # 합산
+        total_score_days += score_days
+        total_job_days += actual_days # 직무 경력은 실제 일수 합산
+        all_roles.update(roles)
+
+        # 리스트에 추가
+        project_record = {
+            "용역명": project_name,
+            "발주기관": client,
+            "참여기간": f"{start_date} ~ {end_date} ({actual_days}일)"
+        }
+        if is_60_percent_rule:
+            other_list.append(project_record)
+        else:
+            relevant_list.append(project_record)
+            
+        all_project_records_str.append(
+            f"{project_name} ({client}, {start_date}~{end_date}, {actual_days}일)"
+        )
+
+    # --- 3. '경력 사항' 최종 계산 ---
+    total_score_months = _days_to_months(total_score_days)
+    total_career_str = f"{_days_to_year_month_str(total_score_days)} (환산 {total_score_days}일 = {total_score_months}개월)"
+
+    score_raw = total_score_months * 0.176
+    score = min(score_raw, 12.0) # 최대 12점
+    score_str = f"{score:.1f}점"
+
+    # --- 4. '직무 분야' 최종 계산 ---
+    # 직무분야는 가중치 없이 실제 일수 사용
+    job_total_months = _days_to_months(total_job_days)
+    job_career_str = f"{_days_to_year_month_str(total_job_days)} ({total_job_days}일 = {job_total_months}개월)"
+    
+    job_field_str = ", ".join(sorted(list(all_roles)))
+    
+    # 직무 평점 (Broad 6점 vs Limited 3점)
+    # 프록시 로직: PDF 예제(10개)를 기준으로, 5개 이상이면 Broad(6점)
+    is_broad_scope = len(all_roles) >= 5 
+    job_score_str = "6점 (광범위)" if is_broad_scope else "3점 (제한적)"
+
+    # --- 5. 최종 결과 딕셔너리 조합 (UI 렌더링용) ---
+    # 첫 번째 프로젝트에서 engineer_name 가져오기
+    engineer_name = projects_df.iloc[0].get("engineer_name", "(AI 추출)")
+
+    output = {
+        "career_details": {
+            "성명": engineer_name,  # AI가 추출한 실제 이름 사용
+            "분야": projects_df.iloc[0].get("primary_original_field", "정보 없음"), # 첫 번째 프로젝트의 분야를 대표로 사용
+            "현재까지 경력": total_career_str, # 환산 경력
+            "평점": score_str,
+            "total_score_months": total_score_months,
+            "해당분야 용역참여실적": relevant_list,
+            "해당분야 이외 참여실적": other_list,
+            "classification_label": "✅ 해당 분야(100%) 및 ⚪ 비해당 분야(60%) 합산",
+            "weight": weight # 마지막 프로젝트의 weight (참고용)
+        },
+        "job_field_details": {
+            "책임건설사업관리기술인": engineer_name,  # 추출된 실제 이름 사용
+            "직무분야": job_field_str,
+            "현재까지 경력": job_career_str, # 실제 경력
+            "평점": job_score_str,
+            "total_job_months": job_total_months,
+            "용역참여실적": all_project_records_str
+        }
+    }
+    return output
+
+
+def get_project_calculations_as_json(projects_df: pd.DataFrame, engineer_name: str = None) -> Dict[str, Any]:
+    """
+    프로젝트 데이터를 JSON 형식으로 변환 (API/파일 출력용)
+
+    Expected JSON 구조에 맞춰 데이터를 포맷팅합니다.
+
+    Args:
+        projects_df: 프로젝트 DataFrame
+        engineer_name: 기술인 성명 (선택사항)
+
+    Returns:
+        JSON 형식의 딕셔너리
+    """
+    if projects_df.empty:
+        return {}
+
+    # 기존 계산 로직 재사용
+    total_score_days = 0
+    total_job_days = 0
+    relevant_list = []
+    other_list = []
+    all_roles = set()
+
+    for _, project_series in projects_df.iterrows():
+        start_date = project_series.get("start_date", "")
+        end_date = project_series.get("end_date", "")
+        project_name = project_series.get("project_name", "(사업명 없음)")
+        client = project_series.get("client_raw", "(발주처 없음)")
+        roles = project_series.get("roles", [])
+
+        is_60_percent_rule = project_series.get("recognition_rate_rule") == "civil_60"
+        weight = 0.6 if is_60_percent_rule else 1.0
+
+        actual_days = _calculate_days(start_date, end_date)
+        score_days = round(actual_days * weight)
+
+        total_score_days += score_days
+        total_job_days += actual_days
+        all_roles.update(roles)
+
+        # JSON 형식으로 프로젝트 기록 생성
+        project_record = {
+            "project_name": project_name,
+            "client": client,
+            "period": f"{start_date} ~ {end_date}",
+            "days": f"{actual_days}일"
+        }
+
+        if is_60_percent_rule:
+            other_list.append(project_record)
+        else:
+            relevant_list.append(project_record)
+
+    # 계산
+    total_score_months = _days_to_months(total_score_days)
+    relevant_days = sum([_calculate_days(p.get("period", " ~ ").split(" ~ ")[0],
+                                         p.get("period", " ~ ").split(" ~ ")[1])
+                         for p in relevant_list])
+    relevant_months = _days_to_months(relevant_days)
+
+    other_days_raw = sum([_calculate_days(p.get("period", " ~ ").split(" ~ ")[0],
+                                          p.get("period", " ~ ").split(" ~ ")[1])
+                          for p in other_list])
+    other_days_weighted = round(other_days_raw * 0.6)
+    other_months = _days_to_months(other_days_weighted)
+
+    score_raw = total_score_months * 0.176
+    score = min(score_raw, 12.0)
+
+    job_total_months = _days_to_months(total_job_days)
+    job_field_str = ", ".join(sorted(list(all_roles)))
+    is_broad_scope = len(all_roles) >= 5
+    job_score_value = 6 if is_broad_scope else 3
+
+    # 이름 결정
+    name = engineer_name if engineer_name else projects_df.iloc[0].get("engineer_name", "(AI 추출)")
+    field = projects_df.iloc[0].get("primary_original_field", "해당 분야")
+
+    # JSON 구조 생성
+    result = {
+        "participating_engineer_career_history": {
+            "title": "참여기술인 경력 사항",
+            "division": "책임건설사업관리기술인",
+            "name": name,
+            "field": field,
+            "relevant_field_career": _days_to_year_month_str(relevant_days),
+            "total_career": _days_to_year_month_str(total_score_days),
+            "total_score": f"{score:.0f}점",
+            "total_days": f"{total_score_days:,}일",
+            "total_months": f"{total_score_months}개월",
+            "relevant_field_projects": relevant_list,
+            "relevant_subtotal_days": f"{relevant_days}일",
+            "relevant_subtotal_months": f"{relevant_months}개월",
+            "other_field_projects": other_list,
+            "other_subtotal_calculation": f"{other_days_raw}일 × 60% = {other_days_weighted}일",
+            "other_subtotal_months": f"{other_months}개월"
+        },
+        "participating_engineer_job_field_history": {
+            "title": "참여기술인 직무분야 실적",
+            "engineer_name": name,
+            "evaluation_1_6_points": {
+                "division": "참여기술인",
+                "name": name,
+                "career": _days_to_year_month_str(total_job_days),
+                "score": f"{job_score_value}점",
+                "job_fields": job_field_str,
+                "total_days": f"{total_job_days:,}일",
+                "total_months": f"{job_total_months}개월",
+                "projects": relevant_list + other_list  # 모든 프로젝트
+            },
+            "evaluation_2_3_points": {
+                "division": "참여기술인",
+                "name": name,
+                "career": _days_to_year_month_str(total_job_days),
+                "score": "3점",
+                "job_fields": job_field_str,
+                "total_days": f"{total_job_days:,}일",
+                "total_months": f"{job_total_months}개월",
+                "projects": relevant_list + other_list  # 모든 프로젝트
+            }
+        }
+    }
+
+    return result

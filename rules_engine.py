@@ -1,4 +1,9 @@
-# rules_engine.py
+"""
+Rules engine for evaluating project eligibility criteria.
+
+Applies checkbox rules from rules_config.py to normalized project data,
+determining which career recognition criteria each project meets.
+"""
 from typing import List, Dict, Any
 import copy
 import pandas as pd

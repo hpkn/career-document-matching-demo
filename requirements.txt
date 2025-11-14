@@ -1,14 +1,18 @@
 streamlit
 langchain
+langchain-core
 langchain-community
 langchain-text-splitters
+langchain-huggingface
 pypdf
 faiss-cpu
 sentence-transformers
 anthropic
 pandas
 openai
-olefile 
+olefile
 reportlab
 requests
-langchain-huggingface # <-- ADD THIS LINE
+pytesseract
+PyMuPDF
+Pillow

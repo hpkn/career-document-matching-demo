@@ -1,4 +1,8 @@
-# config.py
+"""
+Configuration module for career recognition automation system.
+
+Defines directory paths, model settings, and ensures required directories exist.
+"""
 import os
 from pathlib import Path
 
@@ -6,28 +10,26 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 
-RAW_UPLOAD_DIR = DATA_DIR / "uploads_raw"   # HWP/PDF as uploaded
-PDF_DIR = DATA_DIR / "pdfs"          # PDFs used for ingestion
-INDEX_DIR = DATA_DIR / "faiss_index"        # FAISS index
+# Data subdirectories
+RAW_UPLOAD_DIR = DATA_DIR / "uploads_raw"  # Original uploaded files (HWP/PDF)
+PDF_DIR = DATA_DIR / "pdfs"                # PDF files for ingestion
+INDEX_DIR = DATA_DIR / "faiss_index"       # FAISS vector index storage
 
 # Ensure directories exist
 RAW_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
-# Anthropic API Key
-# ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-# if ANTHROPIC_API_KEY is None:
-#     print("[WARN] ANTHROPIC_API_KEY is not set. Set it with:")
-#     print("       export ANTHROPIC_API_KEY='your-key-here'")
-    
-# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# if OPENAI_API_KEY is None:
-#     print("[WARN] OPENAI_API_KEY is not set. Set it with:")
-#     print("       export OPENAI_API_KEY='your-key-here'")
-
+# LLM Configuration - Using Ollama (local model)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-# OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:27b")
+# IMPORTANT: gemma3:4b is too small for Korean text extraction
+# Use a larger model for accurate results:
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")  # Recommended for Korean
+# Alternative models: "gemma2:9b", "llama3.1:8b"
+
+# Note: Cloud API keys (Anthropic, OpenAI) are commented out
+# Uncomment and set environment variables if switching to cloud models
+# ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 
