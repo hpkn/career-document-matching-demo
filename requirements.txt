@@ -16,3 +16,4 @@ requests
 pytesseract
 PyMuPDF
 Pillow
+fitz

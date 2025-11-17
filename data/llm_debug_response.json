@@ -1,11 +1,1 @@
-{
-    "engineer_name": "정환철",
-    "project_name": "광양항서측인입철일괄임찰공사기본설계",
-    "client": "LG건설(주)",
-    "start_date": "2005-03-31",
-    "end_date": "2005-05-31",
-    "original_fields": ["토목", "설계"],
-    "primary_original_field": "토목",
-    "roles": ["설计"],
-    "primary_role": "设汁"
-}
+{"engineer_name":"정환철","project_name":"광양항서측인입철일괄임찰공사기본설계","client":"LG건설(주)","start_date":"2005-03-31","end_date":"2005-05-31","original_fields":["토목","설계"],"primary_original_field":"토목","roles":["설계"],"primary_role":"설계"}

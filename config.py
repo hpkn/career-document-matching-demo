@@ -24,7 +24,7 @@ INDEX_DIR.mkdir(parents=True, exist_ok=True)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # IMPORTANT: gemma3:4b is too small for Korean text extraction
 # Use a larger model for accurate results:
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")  # Recommended for Korean
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:27b")  # Recommended for Korean
 # Alternative models: "gemma2:9b", "llama3.1:8b"
 
 # Note: Cloud API keys (Anthropic, OpenAI) are commented out
