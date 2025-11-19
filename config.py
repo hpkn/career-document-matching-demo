@@ -1,8 +1,4 @@
-"""
-Configuration module for career recognition automation system.
-
-Defines directory paths, model settings, and ensures required directories exist.
-"""
+# config.py
 import os
 from pathlib import Path
 

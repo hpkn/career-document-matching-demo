@@ -1,4 +1,3 @@
-# rules_config.py
 CHECKBOX_RULES = [
     # === 참여일 / 인정일 선택 (상주 / 기술지원 / 직무분야 공통) ===
     {

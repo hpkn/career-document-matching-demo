@@ -1,22 +1,10 @@
-"""
-Document ingestion module for PDF processing and FAISS index building.
-
-This module handles:
-- PDF text extraction (native + OCR fallback)
-- OCR processing for image-based PDFs
-- Document chunking and text splitting
-- LLM-based text normalization
-- FAISS vector index creation
-
-The hybrid approach ensures reliable text extraction from both
-text-based and scanned/image-based PDF documents.
-"""
+# ingest.py
 import os
 import re
 import json
 from typing import List, Dict
 from pathlib import Path
-
+import shutil
 import streamlit as st
 
 import fitz  # PyMuPDF
@@ -30,20 +18,19 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from config import PDF_DIR, INDEX_DIR, DATA_DIR
-from llm_helper import normalize_chunks_with_llm
+from llm_helper import normalize_chunks_with_llm # Note: This is still disabled by flag
 
 # Feature flag for LLM normalization
-# WARNING: Enabling this will significantly slow down indexing (5-10+ minutes)
-# Only enable for heavily distorted OCR text
-USE_LLM_NORMALIZE = False  # Changed from True to False for performance
+USE_LLM_NORMALIZE = False
 
+# --- OCR settings (used only in ocr_page now) ---
+MIN_TEXT_CHARS = 30       # Minimum chars to consider page as "has text"
+OCR_DPI_SCALE = 2.0       # DPI multiplier for OCR (higher = better quality, slower)
+TESS_LANG = "kor+eng"     # Tesseract language models to use
+
+# --- Utility Functions (unchanged) ---
 def clear_pdfs() -> int:
-    """
-    Delete all PDF files in the PDF directory.
-
-    Returns:
-        Number of files deleted
-    """
+    # ... (same as before)
     print("[CLEANUP] Deleting old PDFs...")
     deleted_count = 0
     for f in Path(PDF_DIR).glob("*.pdf"):
@@ -55,87 +42,81 @@ def clear_pdfs() -> int:
     print(f"[CLEANUP] Deleted {deleted_count} PDFs.")
     return deleted_count
 
-
 def clear_index() -> int:
-    """
-    Delete all files in the FAISS index directory.
-
-    Returns:
-        Number of files deleted
-    """
-    print("[CLEANUP] Deleting old FAISS index...")
+    # ... (same as before, but we might want to clear specific folders)
+    print("[CLEANUP] Deleting ALL FAISS index folders...")
     deleted_count = 0
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    for f in Path(INDEX_DIR).glob("*.*"):  # Match .faiss, .pkl, etc.
-        try:
-            f.unlink()
-            deleted_count += 1
-        except Exception as e:
-            print(f"[CLEANUP] Failed to delete {f}: {e}")
-    print(f"[CLEANUP] Deleted {deleted_count} index files.")
+
+    for f in Path(INDEX_DIR).glob("faiss_index_*"): # Clear all run-specific folders
+        if f.is_dir():
+            try:
+                shutil.rmtree(f)
+                deleted_count += 1
+            except Exception as e:
+                print(f"[CLEANUP] Failed to delete {f}: {e}")
+    print(f"[CLEANUP] Deleted {deleted_count} index folders.")
     return deleted_count
 
-
-# =========================
-# OCR Configuration & Helpers
-# =========================
-
-# OCR settings
-MIN_TEXT_CHARS = 30       # Minimum chars to consider page as "has text"
-OCR_DPI_SCALE = 2.0       # DPI multiplier for OCR (higher = better quality, slower)
-TESS_LANG = "kor+eng"     # Tesseract language models to use
-
 def _pixmap_to_pil(pix: fitz.Pixmap) -> Image.Image:
-    """
-    Convert PyMuPDF Pixmap to PIL Image.
-
-    Args:
-        pix: PyMuPDF Pixmap object
-
-    Returns:
-        PIL Image object
-    """
-    if pix.alpha:  # Remove alpha channel if present
+    # ... (same as before)
+    if pix.alpha:
         pix = fitz.Pixmap(pix, 0)
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     return img
 
-
 def _clean_text(text: str) -> str:
-    """
-    Light cleanup of OCR-extracted text.
-
-    Removes:
-    - Form feed characters
-    - Excessive whitespace
-    - Multiple consecutive newlines
-
-    Args:
-        text: Raw OCR text
-
-    Returns:
-        Cleaned text
-    """
+    # ... (same as before)
     text = text.replace("\x0c", " ")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
+# --- [NEW] Step 2: OCR Specific Page Logic ---
+
+def find_tech_page(pdf_path: str) -> int:
+    """
+    Finds the page number containing the string "1. 기술경력".
+    Uses NATIVE text extraction (no OCR).
+    """
+    print(f"[INGEST] Finding '1. 기술경력' page in {pdf_path}")
+    try:
+        with fitz.open(pdf_path) as doc:
+            for i, page in enumerate(doc):
+                text = page.get_text("text")
+                if "1. 기술경력" in text:
+                    print(f"[INGEST] Found '1. 기술경력' on page {i+1}")
+                    return i # Returns 0-based index
+    except Exception as e:
+        print(f"[INGEST] Error finding page: {e}")
+
+    print(f"[WARN] '1. 기술경력' page not found, falling back to page 1.")
+    return 0 # Fallback to first page (0-indexed)
+
+def ocr_page(pdf_path: str, page_num: int) -> str:
+    """
+    Performs OCR on a single, specific page from a PDF.
+    """
+    print(f"[INGEST] Performing OCR on page {page_num + 1} of {pdf_path}")
+    try:
+        with fitz.open(pdf_path) as doc:
+            page = doc.load_page(page_num)
+            mat = fitz.Matrix(OCR_DPI_SCALE, OCR_DPI_SCALE)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            pil = _pixmap_to_pil(pix)
+            text = pytesseract.image_to_string(pil, lang=TESS_LANG)
+            return _clean_text(text)
+    except Exception as e:
+        print(f"[INGEST] Error during single-page OCR: {e}")
+        return ""
+
+# --- [MODIFIED] Step 1: NO-OCR PDF Loading Logic ---
+
 def ocr_pdf_to_docs(pdf_path: str, source_name: str) -> List[Document]:
     """
-    OCR the entire PDF file.
-
-    Used when:
-    - PDF is fully image-based
-    - Native text extraction completely fails
-
-    Args:
-        pdf_path: Path to PDF file
-        source_name: Original filename for metadata
-
-    Returns:
-        List of Document objects (one per page with text)
+    (This function is now only called by hybrid_load_pdf if use_ocr=True)
     """
+    # ... (same as before)
     docs: List[Document] = []
     with fitz.open(pdf_path) as doc:
         total_pages = len(doc)
@@ -154,24 +135,11 @@ def ocr_pdf_to_docs(pdf_path: str, source_name: str) -> List[Document]:
         print(f"[INGEST] {source_name}: OCR complete, extracted {len(docs)}/{total_pages} pages")
     return docs
 
-def hybrid_load_pdf(pdf_path: str, source_name: str) -> List[Document]:
+def hybrid_load_pdf(pdf_path: str, source_name: str, use_ocr: bool = True) -> List[Document]:
     """
-    Hybrid PDF loading with intelligent OCR fallback.
-
-    Strategy:
-    1. Attempt native text extraction with PyPDFLoader
-    2. For pages with insufficient text (<MIN_TEXT_CHARS), run OCR
-    3. If native extraction completely fails, OCR entire document
-
-    This ensures reliable text extraction from both text-based
-    and scanned/image-based PDFs.
-
-    Args:
-        pdf_path: Path to PDF file
-        source_name: Original filename for metadata
-
-    Returns:
-        List of Document objects with extracted text
+    [MODIFIED] Hybrid PDF loading with a flag to disable OCR.
+    
+    If use_ocr=False, this acts as a simple native text extractor.
     """
     # 1) Native extraction
     try:
@@ -181,12 +149,18 @@ def hybrid_load_pdf(pdf_path: str, source_name: str) -> List[Document]:
         print(f"[INGEST] Native extraction failed for {source_name}: {e}")
         native_docs = []
 
+    if not use_ocr:
+        print(f"[INGEST] {source_name}: OCR disabled. Using native text only.")
+        for i, d in enumerate(native_docs):
+            d.metadata.setdefault("source", source_name)
+            d.metadata.update({"page": i + 1, "extraction": "native-no-ocr"})
+        return [d for d in native_docs if d.page_content and d.page_content.strip()]
+
+    # --- OCR-enabled logic (same as before) ---
     if not native_docs:
-        # Entire file likely image-only: OCR the whole thing
         print(f"[INGEST] {source_name}: No native text found, using full OCR")
         return ocr_pdf_to_docs(pdf_path, source_name)
 
-    # 2) OCR weak pages only
     ocr_replacements: Dict[int, Document] = {}
     ocr_page_count = 0
     native_page_count = 0
@@ -195,7 +169,6 @@ def hybrid_load_pdf(pdf_path: str, source_name: str) -> List[Document]:
         for i, d in enumerate(native_docs):
             raw = (d.page_content or "").strip()
             if len(raw) >= MIN_TEXT_CHARS:
-                # mark native extraction
                 d.metadata.setdefault("source", source_name)
                 d.metadata.update({"page": i + 1, "extraction": "native"})
                 native_page_count += 1
@@ -215,29 +188,25 @@ def hybrid_load_pdf(pdf_path: str, source_name: str) -> List[Document]:
                 )
                 ocr_page_count += 1
             else:
-                # keep empty native so we preserve structure, but mark it
                 d.metadata.setdefault("source", source_name)
                 d.metadata.update({"page": i + 1, "extraction": "native-empty"})
 
-    # 3) Merge native + per-page OCR
     merged: List[Document] = []
     for i, d in enumerate(native_docs):
         merged.append(ocr_replacements.get(i, d))
 
-    # Filter truly empty pages
     merged = [d for d in merged if d.page_content and d.page_content.strip()]
-
-    # Log extraction summary
-    print(f"[INGEST] {source_name}: {native_page_count} pages native text, {ocr_page_count} pages OCR, {len(merged)} total pages")
-
+    print(f"[INGEST] {source_name}: {native_page_count} pages native, {ocr_page_count} pages OCR, {len(merged)} total pages")
     return merged
 
 
-def load_pdfs_from_folder(folder: str) -> List[Document]:
+def load_pdfs_from_folder(folder: str, use_ocr: bool = True) -> List[Document]:
+    """
+    [MODIFIED] Loads all PDFs from the folder, passing the use_ocr flag.
+    """
     docs: List[Document] = []
     pdf_files_found = False
 
-    # Load UUID->Name map (optional)
     name_map_path = DATA_DIR / "uuid_name_map.json"
     name_map: Dict[str, str] = {}
     if name_map_path.exists():
@@ -253,12 +222,11 @@ def load_pdfs_from_folder(folder: str) -> List[Document]:
         print(f"[INGEST] Loading {fname} (Original: {original_name})")
 
         try:
-            loaded_docs = hybrid_load_pdf(path, original_name)
+            loaded_docs = hybrid_load_pdf(path, original_name, use_ocr=use_ocr)
             if not loaded_docs:
-                print(f"[INGEST] {fname}: No text extracted (native+OCR).")
+                print(f"[INGEST] {fname}: No text extracted.")
                 st.warning(f"{original_name}: 텍스트를 추출하지 못했습니다.")
                 continue
-
             docs.extend(loaded_docs)
         except Exception as e:
             print(f"[INGEST] Error loading {fname}: {e}")
@@ -271,55 +239,57 @@ def load_pdfs_from_folder(folder: str) -> List[Document]:
     return docs
 
 
-# BULD INDEX 
-def build_index():
-    # 1) Clear ONLY the old index
-    clear_index()
+# --- [MODIFIED] Main Index Building Function ---
 
-    print(f"[INGEST] Loading PDFs from {PDF_DIR}")
-    docs = load_pdfs_from_folder(str(PDF_DIR))
+def build_index(file_map: Dict[str, str], index_folder_name: str, use_ocr: bool = True):
+    """
+    [MODIFIED] Builds a FAISS index from the PDFs in PDF_DIR.
+    
+    Args:
+        file_map: Map of {uuid_name: original_name} (only used for logging).
+        index_folder_name: The subfolder within INDEX_DIR to save this index.
+        use_ocr: Whether to enable OCR fallback.
+    """
+    
+    # 1. Set and clear the specific index directory
+    target_index_dir = INDEX_DIR / index_folder_name
+    if target_index_dir.exists():
+        shutil.rmtree(target_index_dir)
+    target_index_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[INGEST] Building index in: {target_index_dir}")
+
+    print(f"[INGEST] Loading PDFs from {PDF_DIR} (OCR: {use_ocr})")
+    docs = load_pdfs_from_folder(str(PDF_DIR), use_ocr=use_ocr)
     if not docs:
         print("[INGEST] No documents loaded, skipping index build.")
         return
 
-    # 2) Split documents
+    # 2. Split documents
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1500,  # Increased from 1000 to capture more context (e.g., headers + project data)
-        chunk_overlap=300,  # Increased from 200 to ensure overlap captures headers
+        chunk_size=1500,
+        chunk_overlap=300,
         separators=["\n\n", "\n", " ", ""],
     )
     split_docs = splitter.split_documents(docs)
-    # Remove empty chunks if any
     split_docs = [d for d in split_docs if d.page_content and d.page_content.strip()]
-    print(f"[INGEST] Total chunks (pre-LLM): {len(split_docs)}")
+    print(f"[INGEST] Total chunks: {len(split_docs)}")
 
     if not split_docs:
-        raise ValueError("[INGEST] No text chunks after splitting. Check OCR or loaders.")
+        raise ValueError("[INGEST] No text chunks after splitting. Check loaders.")
 
-    # 3) LLM normalization (optional)
+    # 3. LLM normalization (if enabled)
     if USE_LLM_NORMALIZE:
         split_docs = normalize_chunks_with_llm(split_docs)
-        print(f"[INGEST] Chunks after LLM normalization: {len(split_docs)}")
 
-    # 4) Embeddings & FAISS
-    print(f"[INGEST] Loading embedding model (first time may take 1-2 min to download)...")
+    # 4. Embeddings & FAISS
+    print(f"[INGEST] Loading embedding model...")
     embeddings = HuggingFaceEmbeddings(
         model_name="jhgan/ko-sroberta-multitask",
         model_kwargs={"device": "cpu"},
     )
-    print(f"[INGEST] Embedding model loaded successfully")
-
     print(f"[INGEST] Creating FAISS index from {len(split_docs)} chunks...")
     vectorstore = FAISS.from_documents(split_docs, embeddings)
 
-    print(f"[INGEST] Saving index to {INDEX_DIR}...")
-    vectorstore.save_local(str(INDEX_DIR))
+    print(f"[INGEST] Saving index to {target_index_dir}...")
+    vectorstore.save_local(str(target_index_dir))
     print(f"[INGEST] ✅ FAISS index saved successfully!")
-
-if __name__ == "__main__":
-    try:
-        build_index()
-        st.sidebar.success("인덱스 생성 완료.")
-    except Exception as e:
-        st.sidebar.error(f"인덱스 생성 중 오류: {e}")
-        raise

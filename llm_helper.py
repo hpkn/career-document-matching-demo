@@ -1,8 +1,7 @@
+
 """
 LLM helper module for text normalization using Ollama.
-
-Provides functions to clean and normalize OCR-extracted text
-using local LLM models via Ollama API.
+...
 """
 import hashlib
 import requests
@@ -11,26 +10,11 @@ from langchain_core.documents import Document
 
 from config import OLLAMA_BASE_URL, OLLAMA_MODEL
 
-# Feature flag: Enable/disable LLM normalization
-# WARNING: Enabling this will significantly slow down indexing
-USE_LLM_NORMALIZE = False  # Disabled by default for performance 
-
-
-# LLM_CACHE_PATH = DATA_DIR / "llm"
+USE_LLM_NORMALIZE = False
 
 def ollama_generate(prompt: str, timeout: int = 60) -> str:
     """
     Calls Ollama /api/generate endpoint.
-
-    Args:
-        prompt: The text prompt to send to the model
-        timeout: Request timeout in seconds (default: 60)
-
-    Returns:
-        Generated text response from the model
-
-    Raises:
-        requests.exceptions.RequestException: If the request fails
     """
     try:
         resp = requests.post(
@@ -60,18 +44,6 @@ def _hash_text(text: str) -> str:
 def normalize_text_via_llm(text: str) -> str:
     """
     Normalize OCR text using LLM to fix common OCR errors.
-
-    Fixes:
-    - Broken line breaks and hyphenation
-    - Extra whitespace
-    - Header/footer artifacts
-    - OCR noise
-
-    Args:
-        text: Raw OCR-extracted text
-
-    Returns:
-        Normalized text (or original if normalization fails)
     """
     
     if not text or not text.strip():
@@ -90,30 +62,17 @@ def normalize_text_via_llm(text: str) -> str:
 
     try:
         normalized = ollama_generate(prompt)
-        # very light cleanup
         normalized = normalized.replace("\u000c", " ").strip()
     except Exception as e:
-        # Fallback: if Ollama fails, return original text
         print(f"[LLM] Normalize failed: {e}")
         normalized = text
 
-    # cache[key] = normalized
-    # _save_llm_cache(cache)
     return normalized
 
 
 def normalize_chunks_with_llm(split_docs: List[Document]) -> List[Document]:
     """
     Normalize a list of document chunks using LLM.
-
-    Small chunks (<120 chars) are skipped to save processing time.
-    Normalized chunks are marked with llm_normalized=True in metadata.
-
-    Args:
-        split_docs: List of document chunks
-
-    Returns:
-        List of normalized document chunks
     """
     if not USE_LLM_NORMALIZE:
         print("[LLM] LLM normalization is disabled (USE_LLM_NORMALIZE=False)")
@@ -124,7 +83,6 @@ def normalize_chunks_with_llm(split_docs: List[Document]) -> List[Document]:
 
     for i, d in enumerate(split_docs):
         txt = d.page_content or ""
-        # Skip tiny chunks (often headings or short fragments)
         if len(txt) < 120:
             normalized_docs.append(d)
             continue
@@ -132,13 +90,11 @@ def normalize_chunks_with_llm(split_docs: List[Document]) -> List[Document]:
         try:
             cleaned = normalize_text_via_llm(txt)
             if cleaned and cleaned != txt:
-                # Keep original metadata + mark as normalized
                 md = {**(d.metadata or {}), "llm_normalized": True}
                 normalized_docs.append(Document(page_content=cleaned, metadata=md))
             else:
                 normalized_docs.append(d)
         except Exception as e:
-            # On error, keep original document
             print(f"[LLM] Failed to normalize chunk {i+1}: {e}")
             normalized_docs.append(d)
 

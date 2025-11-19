@@ -13,7 +13,7 @@ from rules_config import CHECKBOX_RULES
 
 def _normalize_text(value: Any) -> str:
     """
-    --- THIS IS THE MISSING FUNCTION ---
+    --- [FIX] This function was missing ---
     Safely converts any value to a normalized string.
     """
     if value is None:
