@@ -2,6 +2,10 @@
 python3 -m venv .venv
 source .venv/bin/activate
 
-streamlit run app.py
+### Online
+#### Running as a system service: sudo systemctl reload career-demo.service
+#### access url: https://ai-test.rs-team.com
 
-sudo systemctl reload career-demo.service
+### Local
+#### streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+#### Access: localhost:8501
