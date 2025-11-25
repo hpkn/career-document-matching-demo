@@ -12,8 +12,6 @@ streamlit run app.py
 <!-- streamlit run app.py --server.port 8501 --server.address 0.0.0.0 -->
 
 domain: https://ai-test.rs-team.com
-username: testuser 
-password: rsteamCOD001
 
 # 1. Delete all old processed PDFs
 sudo systemctl stop career-demo.service
