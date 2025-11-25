@@ -1,333 +1,623 @@
-"""
-RAG (Retrieval-Augmented Generation) module for project data extraction.
-
-This module:
-- Loads FAISS vector index of document embeddings
-- Retrieves relevant document chunks via similarity search
-- Uses Ollama LLM to extract structured project data from text
-- Returns parsed JSON with project information
-"""
 import json
+import re
 from typing import Dict, Any, List
+from collections import Counter
 import requests
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
+from openai import OpenAI
+from config import STEP1_INDEX_DIR, OLLAMA_BASE_URL, OLLAMA_MODEL, STEP2_INDEX_DIR
+from datetime import datetime
 
-from config import INDEX_DIR, OLLAMA_BASE_URL, OLLAMA_MODEL, DATA_DIR
+def warn(msg: str):
+    print(f"[WARN] {msg}")
+
+def err(msg: str):
+    print(f"[ERROR] {msg}")
+
+def _extract_json_block(text: str) -> str:
+    """
+    Extract JSON substring from LLM output even when polluted with text.
+    """
+    try:
+        start = text.index("{")
+        end = text.rindex("}")
+        return text[start:end + 1]
+    except Exception:
+        warn("[RAG] Could not find valid JSON block. Returning raw text.")
+        return text.strip()
 
 
-def _load_vectorstore() -> FAISS:
-# ... 기존 코드 ...
-    print(f"[RAG] Loading FAISS index from: {INDEX_DIR}")
+def _repair_common_json_errors(text: str) -> str:
+    """
+    Attempt to fix common broken JSON issues returned by LLM:
+    - trailing commas
+    - single quotes
+    - missing braces
+    """
+    s = text.strip()
+
+    # Replace single quotes with double
+    s = s.replace("'", "\"")
+
+    # Remove trailing commas before ]
+    s = re.sub(r",\s*]", "]", s)
+    # Remove trailing commas before }
+    s = re.sub(r",\s*}", "}", s)
+
+    return s
+
+
+def _safe_json_parse(text: str) -> Dict[str, Any]:
+    """
+    Attempts multiple passes to parse JSON.
+    """
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    repaired = _repair_common_json_errors(text)
+    try:
+        return json.loads(repaired)
+    except Exception as e:
+        err(f"[RAG] JSON parsing failed: {e}")
+        return {}
+    
+def parse_date_strict(date_str):
+    """Parses dates from PDF formats."""
+    if not date_str: return None
+    clean = re.sub(r'[^\d.-]', '', str(date_str))
+    for fmt in ('%Y-%m-%d', '%Y.%m.%d', '%y.%m.%d', '%y-%m-%d'):
+        try:
+            dt = datetime.strptime(clean, fmt)
+            if dt.year < 100:
+                dt = dt.replace(year=(1900 + dt.year) if dt.year > 50 else (2000 + dt.year))
+            return dt
+        except: continue
+    return None
+
+def validate_row(row):
+    """Fixes common extraction errors (e.g. days mismatch)."""
+    s_dt = parse_date_strict(row.get('start_date'))
+    e_dt = parse_date_strict(row.get('end_date'))
+    
+    # Get extracted days
+    raw_days = str(row.get('recognition_days', '0'))
+    match = re.search(r'(\d+)', raw_days.replace(',', ''))
+    recog_days = int(match.group(1)) if match else 0
+    
+    if s_dt and e_dt:
+        calc_days = (e_dt - s_dt).days + 1
+        
+        # Fix: If extracted days are wildly different from calendar days (e.g. > 30 days diff)
+        # This fixes the "1997.08.15~1997.08.16 -> 936 days" error.
+        if abs(recog_days - calc_days) > 30:
+            row['recognition_days'] = str(calc_days)
+            row['confidence'] = "0.8 (Auto-Corrected Days)"
+        else:
+            row['confidence'] = "1.0"
+            
+    return row
+
+def _get_vectorstore(index_path):
+    """Loads the FAISS index from the specific path."""
+    print(f"[RAG] Loading FAISS index from: {index_path}") # Debug print
+    embeddings = HuggingFaceEmbeddings(
+        model_name="jhgan/ko-sroberta-multitask",
+        model_kwargs={"device": "cpu"}
+    )
+    return FAISS.load_local(str(index_path), embeddings, allow_dangerous_deserialization=True)
+
+def _call_ollama(prompt: str) -> str:
+    """Calls Ollama API."""
+    url = f"{OLLAMA_BASE_URL}/api/chat"
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a precise JSON extractor."},
+            {"role": "user", "content": prompt}
+        ],
+        "stream": False,
+        "options": {"temperature": 0.0, "num_ctx": 16000},
+    }
+
+    print(f"[RAG] Calling Ollama: {url} / model={OLLAMA_MODEL}")
+    try:
+        resp = requests.post(url, json=payload, timeout=300)
+        return resp.json().get("message", {}).get("content", "")
+    except Exception as e:
+        print(f"[RAG] ERROR: Failed to call Ollama: {e}")
+        return "{}"
+
+
+def _call_ollama_direct(prompt: str) -> str:
+    """Direct call to Ollama for Step 2."""
+    url = f"{OLLAMA_BASE_URL}/api/chat"
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a data extraction engine for Korean Construction Career Certificates (KHEA). Output ONLY JSON."},
+            {"role": "user", "content": prompt}
+        ],
+        "stream": False,
+        "options": {"temperature": 0.0, "num_ctx": 8192} 
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=300)
+        return resp.json().get("message", {}).get("content", "")
+    except Exception as e:
+        print(f"[RAG] Error: {e}")
+        return ""
+
+def _get_llm():
+    try:
+        return OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+    except Exception as e:
+        err(f"[RAG] Failed to init LLM client: {e}")
+        return None
+    
+    
+JSON_PROMPT = """
+당신은 건설/토목 경력 PDF 문서를 JSON으로 구조화하는 전문가입니다.
+
+아래는 PDF에서 추출한 텍스트입니다.
+이 텍스트에는 여러 개의 프로젝트가 섞여 있을 수 있습니다.
+
+PDF에서 발견되는 모든 프로젝트를 다음 JSON 구조로 출력하세요:
+
+{
+  "projects": [
+    {
+      "project_name": "",
+      "client": "",
+      "client_raw": "",
+      "start_date": "",
+      "end_date": "",
+      "participation_days": "",
+      "role": "",
+      "primary_original_field": ""
+    }
+  ]
+}
+
+규칙:
+- JSON만 출력. 설명 문구 금지.
+- 빈 값이라도 필드를 반드시 포함.
+- 날짜는 YYYY-MM-DD 또는 YYYY-MM 형식 유지.
+- client_raw는 가능한 원문 그대로 추출.
+
+아래는 원문 텍스트입니다:
+---------------------------------
+{{TEXT}}
+---------------------------------
+"""
+def extract_clean_json_from_llm(raw_text: str) -> Dict[str, Any]:
+    """
+    Step 1 LLM caller:
+    - Sends raw PDF text → LLM
+    - Extracts JSON block
+    - Repairs + parses JSON
+    """
+    client = _get_llm()
+    if client is None:
+        err("[RAG] No LLM client available.")
+        return {"projects": []}
+
+    prompt = JSON_PROMPT.replace("{{TEXT}}", raw_text[:15000])  # prevent overload
+
+    try:
+        resp = client.chat.completions.create(
+            model="llama3.1:latest",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+        )
+    except Exception as e:
+        err(f"[RAG] LLM call failed: {e}")
+        return {"projects": []}
+
+    if not resp or not resp.choices:
+        warn("[RAG] LLM returned no choices.")
+        return {"projects": []}
+
+    content = resp.choices[0].message.content.strip()
+
+    json_block = _extract_json_block(content)
+    data = _safe_json_parse(json_block)
+
+    if not isinstance(data, dict):
+        warn("[RAG] LLM output is not a dict; wrapping empty.")
+        return {"projects": []}
+
+    if "projects" not in data:
+        # sometimes model outputs single project object
+        if all(k in data for k in ["project_name", "client"]):
+            warn("[RAG] LLM returned a single project; converting → list.")
+            data = {"projects": [data]}
+        else:
+            warn("[RAG] LLM output missing 'projects' key. Returning empty.")
+            return {"projects": []}
+
+    # Ensure list format
+    projects = data.get("projects", [])
+    if isinstance(projects, dict):
+        warn("[RAG] Projects was dict; wrapping into list.")
+        projects = [projects]
+
+    return {"projects": projects}
+
+def get_raw_project_data(query: str, top_k: int = 25) -> List[Dict[str, Any]]:
+    """Generic wrapper to maintain compatibility if needed."""
+    return get_step2_table() # Default to table extraction logic
+
+
+def _parse_json_robust(text: str):
+    """
+    Extracts JSON object or array from text using Regex.
+    Fixes issues where LLM adds markdown or conversational filler.
+    """
+    if not text: return None
+    
+    # 1. Remove Markdown code blocks
+    clean_text = re.sub(r"```json|```", "", text).strip()
+    
+    # 2. Try to find the outer-most JSON structure ({...})
+    # This regex looks for the first '{' and the last '}'
+    dict_match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+    if dict_match:
+        try:
+            return json.loads(dict_match.group(0))
+        except: pass
+
+    # 3. Fallback: Try parsing the raw cleaned text
+    try:
+        return json.loads(clean_text)
+    except:
+        pass
+        
+    print(f"[RAG] JSON Parsing Failed. Raw text: {text[:100]}...")
+    return None
+# --- STEP 1 DATA EXTRACTOR ---
+def get_step1_data(query: str, top_k: int = 50):
+    try:
+        vs = _get_vectorstore(STEP1_INDEX_DIR)
+        docs = vs.similarity_search(query, k=top_k)
+        context = "\n\n".join([d.page_content for d in docs])
+
+        # YOUR EXACT PROMPT LOGIC
+        prompt = f"""
+        당신은 한국 건설/토목 경력 서류를 읽고 **하나의 종합적인 프로젝트 이력**을 만들어내는 도우미입니다.
+
+        아래는 여러 개의 문서에서 뽑은 관련 텍스트입니다.
+        이 텍스트들은 **모두 하나의 동일한 프로젝트**에 대한 내용입니다.
+        모든 텍스트를 종합하여 이 프로젝트에 대한 **단일 JSON 객체**를 생성해 주세요.
+
+        [컨텍스트 시작]
+        {context}
+        [컨텍스트 끝]
+
+        요구사항:
+        - 각 필드에 대해 가장 정확하고 포괄적인 정보를 찾아서 채워주세요.
+        - **복수 선택(List)** 가능: 해당되는 값이 여러 개이면 배열(list)로 모두 포함합니다.
+
+        필드 정의:
+        - "project_name": string (가장 정확한 공사명)
+        - "client": string (대표 발주처)
+        - "clients": string[] (문서에 등장하는 모든 발주처 리스트)
+        - "start_date": string (YYYY-MM-DD)
+        - "end_date": string (YYYY-MM-DD)
+        - "original_fields": string[] (주요 공종/분야 리스트 예: ["하수도", "상수도"])
+        - "primary_original_field": string (핵심 공종 1개)
+        - "roles": string[] (모든 담당업무 리스트 예: ["건설사업관리(기술지원)", "감리"])
+        - "primary_role": string (주된 담당업무 1개)
+        - "engineer_name": string (기술인 성명)
+
+        출력 형식(중요):
+        - 반드시 JSON 객체({{ ... }}) 하나만 출력합니다.
+        """
+        
+        raw_text = _call_ollama(prompt)
+        sanitized = re.sub(r"```json|```", "", raw_text).strip()
+        
+        # Find JSON
+        match = re.search(r'\{.*\}', sanitized, re.DOTALL)
+        if match:
+            sanitized = match.group(0)
+        
+        data = json.loads(sanitized)
+        if isinstance(data, dict): return data
+        if isinstance(data, list) and data: return data[0]
+        return {}
+        
+    except Exception as e:
+        print(f"[RAG] Step 1 Error: {e}")
+        return {}
+
+# --- STEP 2 DATA EXTRACTOR ---
+def get_step2_table():
+    """Extracts the full project table for Step 2."""
+    try:
+        vs = _get_vectorstore(STEP2_INDEX_DIR)
+        # Reduced k slightly to 40 to prevent context overflow/empty response
+        docs = vs.similarity_search("참여기간 사업명 직무분야 담당업무 발주자 공사종류 직위 인정일 참여일", k=40)
+        context = "\n".join([d.page_content for d in docs])
+
+        if not context.strip():
+            print("[RAG] Warning: No context found in index.")
+            return []
+
+        prompt = f"""You are a data extraction engine.
+        
+        TASK: Extract ALL rows from the '1. 기술경력' or '2. 건설사업관리' table in the context.
+        
+        Extract these exact fields:
+        1. engineer_name (Name from header)
+        2. start_date (YYYY-MM-DD from period)
+        3. end_date (YYYY-MM-DD from period)
+        4. recognition_days (일정일: The FIRST number in parentheses e.g., '(365일)' -> 365)
+        5. participation_days (참여일수: The SECOND number in parentheses e.g., '(1000일)' -> 1000. If only one, use that)
+        6. project_name (사업명)
+        7. job_field (직무분야)
+        8. role (담당업무)
+        9. client (발주자)
+        10. construction_type (공사종류)
+        11. rank (직위)
+        12. confidence (A number 0.0 to 1.0 indicating confidence)
+
+        CRITICAL RULES:
+        - Use the engineer name found in the text (e.g. 김수걸, 최연식).
+        - Ignore rows with '본사' or '대기'.
+        - Output must be valid JSON.
+        
+        Return a JSON ARRAY of objects: [ {{...}}, {{...}} ]
+        
+        Context: 
+        {context}
+        """
+        
+        res = _call_ollama(prompt)
+        
+        # --- Robust Cleaning & Parsing ---
+        # 1. Remove markdown code blocks
+        res = re.sub(r"```json|```", "", res).strip()
+        
+        # 2. Remove invalid escapes (common source of crashes)
+        res = re.sub(r'\\', '', res)
+        
+        # 3. Check if empty
+        if not res:
+            print("[RAG] Error: LLM returned empty response.")
+            return []
+
+        # 4. Try Parsing
+        try:
+            data = json.loads(res)
+        except json.JSONDecodeError as e:
+            print(f"[RAG] JSON Parse Error: {e}")
+            print(f"[RAG] Raw Output causing error: {res[:500]}...") # Log first 500 chars
+            return []
+
+        # 5. Structure Validation
+        if isinstance(data, dict):
+            # Handle case where LLM wraps list in a key like {"projects": [...]}
+            for k in data: 
+                if isinstance(data[k], list): return data[k]
+            return []
+            
+        return data if isinstance(data, list) else []
+        
+    except Exception as e:
+        print(f"[RAG] General Error in Step 2: {e}")
+        return []
+    
+# With OCR
+# --- Step 2: Page-by-Page Processing ---
+def process_step2_text(pages_text: list):
+    if not pages_text: return []
+
+    print(f"[Step 2] Processing {len(pages_text)} pages...")
+    all_extracted_rows = []
+
+    for idx, page_content in enumerate(pages_text):
+        if len(page_content) < 50: continue
+
+        prompt = f"""
+        Analyze this SINGLE PAGE of a Korean Career Certificate.
+        Extract rows from the '기술경력' or '건설사업관리' table.
+
+        PAGE TEXT:
+        {page_content}
+        
+        EXTRACTION RULES:
+        1. **Anchor:** Every valid row MUST have a date range (e.g. "2010.05.01 ~ 2012.02.28").
+        2. **Project Name:** Extract the full project name (e.g. "학성교가설 및 접속도로 개설공사").
+        3. **Client:** Extract the Client Name (e.g. "울산시청").
+        4. **Days:** Extract 'recognition_days' from the first number in brackets e.g. (936일).
+
+        OUTPUT FORMAT (JSON List):
+        [
+            {{
+                "start_date": "YYYY-MM-DD",
+                "end_date": "YYYY-MM-DD",
+                "recognition_days": "936",
+                "project_name": "Name",
+                "client": "Client",
+                "construction_type": "Type",
+                "job_field": "Field",
+                "role": "Role",
+                "rank": "Rank"
+            }}
+        ]
+        
+        Return ONLY JSON.
+        """
+        
+        response = _call_ollama_direct(prompt)
+        
+        try:
+            clean = re.sub(r"```json|```", "", response).strip()
+            clean = re.sub(r'\\(\d)', r'\1', clean)
+            
+            page_data = json.loads(clean)
+            
+            if isinstance(page_data, dict):
+                for k in page_data:
+                    if isinstance(page_data[k], list): 
+                        page_data = page_data[k]; break
+            
+            if isinstance(page_data, list):
+                for row in page_data:
+                    # Filter empty rows
+                    if not row.get('project_name'): continue
+                    if not re.search(r'\d', str(row.get('start_date', ''))): continue
+                    
+                    # Apply Validation Fix
+                    row = validate_row(row)
+                    all_extracted_rows.append(row)
+                
+        except Exception as e:
+            print(f"    [Warn] Failed page {idx+1}: {e}")
+            continue
+
+    # Deduplicate
+    unique_rows = {}
+    for row in all_extracted_rows:
+        key = f"{row.get('start_date')}_{row.get('project_name')}"
+        if key not in unique_rows:
+            unique_rows[key] = row
+        else:
+            if len(str(row)) > len(str(unique_rows[key])):
+                unique_rows[key] = row
+                
+    final_list = list(unique_rows.values())
+    
+    try:
+        final_list.sort(key=lambda x: x.get('start_date', '0000'), reverse=True)
+    except: pass
+
+    return final_list
+
+
+def _load_vectorstore(INDEX) -> FAISS:
+    print(f"[RAG] Loading FAISS index from: {INDEX}")
     embeddings = HuggingFaceEmbeddings(
         model_name="jhgan/ko-sroberta-multitask",
         model_kwargs={"device": "cpu"},
     )
     vectorstore = FAISS.load_local(
-        folder_path=str(INDEX_DIR),
+        folder_path=str(INDEX),
         embeddings=embeddings,
         allow_dangerous_deserialization=True,
     )
     return vectorstore
 
-def _call_ollama(prompt: str) -> str:
-# ... 기존 코드 ...
-    url = f"{OLLAMA_BASE_URL}/api/chat"
-
-    # Add system message to enforce JSON array output
-    system_msg = "You are a data extraction assistant. You MUST output a valid JSON array starting with [ and ending with ]. NEVER output a single object. ALWAYS output an array of objects, even if there is only one item."
-
-    payload = {
-        "model": OLLAMA_MODEL,
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False,
-        "format": "json", # Request JSON format
-        "options": {"temperature": 0.0},
-    }
-
-    print(f"[RAG] Calling Ollama: {url} / model={OLLAMA_MODEL}")
-    try:
-        resp = requests.post(url, json=payload, timeout=120) # 2 min timeout
-        resp.raise_for_status()
-        data = resp.json()
-        text = data.get("message", {}).get("content", "")
-        return text.strip()
-    except requests.exceptions.ConnectionError:
-        print("\n" + "="*50)
-        print("ERROR: Could not connect to Ollama.")
-        print(f"Please ensure Ollama is running at {OLLAMA_BASE_URL}")
-        print("You can run it with: `ollama serve`")
-        print("="*50 + "\n")
-        return "[]" # Return empty list on error
-    except Exception as e:
-        print(f"[RAG] ERROR: Failed to call Ollama: {e}")
-        return "[]"
-
-
-def get_raw_project_data(query: str, top_k: int = 25) -> List[Dict[str, Any]]: # [수정] 반환 타입이 List[Dict], top_k 증가
-# ... 기존 코드 ...
+def get_raw_project_data(query: str, top_k: int = 10) -> Dict[str, Any]:
     """
-    Synthesizes all data into a LIST of project objects.
+    Synthesizes all data into ONE project object, now supporting
+    multiple fields and roles as lists.
     """
-    vectorstore = _load_vectorstore()
+    vectorstore = _load_vectorstore(STEP1_INDEX_DIR)
 
     print(f"[RAG] Searching FAISS (k={top_k}) for query: {query!r}")
     docs = vectorstore.similarity_search(query, k=top_k)
 
     if not docs:
-        print("[RAG] WARNING: No documents found in FAISS index!")
-        print("[RAG] This means either:")
-        print("[RAG]   1. Index is empty (no PDFs were processed)")
-        print("[RAG]   2. Embeddings failed to create")
-        print("[RAG]   3. Index file is corrupted")
-        return []
-
-    print(f"[RAG] Retrieved {len(docs)} document chunks from FAISS")
-    print(f"[RAG] First chunk preview (100 chars): {docs[0].page_content[:100]}...")
-
-    # Debug: Show how many chunks from each source
-    from collections import Counter
-    source_counts = Counter(d.metadata.get('source', 'unknown') for d in docs)
-    print(f"[RAG] Chunks by source: {dict(source_counts)}")
+        print("[RAG] No documents found.")
+        return {}
 
     context_text = "\n\n---\n\n".join(
         f"[CHUNK {i+1} from {d.metadata.get('source', 'unknown')}]\n{d.page_content}"
         for i, d in enumerate(docs)
     )
 
-    print(f"[RAG] Total context length: {len(context_text)} characters")
+    # --- THIS IS YOUR NEW, UPDATED PROMPT ---
+    prompt = f"""
+        당신은 한국 건설/토목 경력 서류를 읽고 **하나의 종합적인 프로젝트 이력**을 만들어내는 도우미입니다.
 
-    # Debug: Save context to file for inspection
-    context_debug_path = DATA_DIR / "llm_debug_context.txt"
-    try:
-        with open(context_debug_path, "w", encoding="utf-8") as f:
-            f.write(context_text)
-        print(f"[RAG] Context saved to: {context_debug_path}")
-    except Exception as e:
-        print(f"[RAG] Failed to save context: {e}")
+        아래는 여러 개의 문서에서 뽑은 관련 텍스트입니다.
+        이 텍스트들은 **모두 하나의 동일한 프로젝트**에 대한 내용입니다.
+        모든 텍스트를 종합하여 이 프로젝트에 대한 **단일 JSON 객체**를 생성해 주세요.
 
-    # Debug: Check if engineer name pattern exists in retrieved chunks
-    import re
-    name_patterns = [r'성명[:\s]*([가-힣]{2,4})', r'이름[:\s]*([가-힣]{2,4})', r'성\s*명[:\s]*([가-힣]{2,4})']
-    found_names = []
-    for pattern in name_patterns:
-        matches = re.findall(pattern, context_text)
-        if matches:
-            found_names.extend(matches)
-    if found_names:
-        print(f"[RAG] Found potential engineer names in chunks: {set(found_names)}")
-    else:
-        print(f"[RAG] WARNING: No engineer name pattern found in retrieved chunks!")
-        print(f"[RAG] This may indicate the name is not in the top chunks or uses different format.")
-        print(f"[RAG] Suggestion: Check {context_debug_path} to see what text was retrieved")
-
-    # --- [수정] 프롬프트가 단일 객체가 아닌 'JSON 리스트'를 요청하도록 변경 ---
-    prompt = f"""You are extracting construction project career data from Korean documents.
-
-        DOCUMENT CHUNKS:
+        [컨텍스트 시작]
         {context_text}
+        [컨텍스트 끝]
 
-        TASK: Extract ALL construction projects from the "기술경력" section ONLY into a JSON array.
+        요구사항:
+        - 모든 컨텍스트를 종합하여 **단 하나의 JSON 객체**를 출력합니다.
+        - 각 필드에 대해 가장 정확하고 포괄적인 정보를 찾아서 채워주세요.
+        - 일부 항목은 **여러 개 선택(복수 선택)** 이 가능하므로, 해당되는 값이 여러 개이면 **배열(list)** 로 모두 포함합니다.
 
-        CRITICAL SECTION FILTERING:
-        - ONLY extract projects from section "1. 기술경력" (Technical Career)
-        - IGNORE section "2. 건설사업관리" (Construction Management)
-        - IGNORE any sections about "감리", "감독", "건설사업관리"
-        - Focus on the table rows under "1. 기술경력"
+        필드 정의:
+        - "project_name": string  
+        - 가장 정확한 전체 공사명 (단일 값)
+        - "client": string  
+        - 발주처 이름 (단일 값이 가장 자연스러우나, 복수라면 대표 발주처를 선택)
+        - "start_date": string  
+        - 가장 이른 시작일, YYYY-MM-DD 형식 (모르면 ""(빈 문자열))
+        - "end_date": string  
+        - 가장 늦은 종료일, YYYY-MM-DD 형식 (모르면 ""(빈 문자열))
 
-        STEP 1 - FIND ENGINEER NAME (성명):
-        The engineer's name appears in headers with patterns like:
-        - "성명: 정환철" or "성영: 정환철" (OCR may misread 성명 as 성영)
-        - "이름: 정환철"
-        - Look for "성명", "성영", "이름" followed by ":" and a Korean name
+        - "original_fields": string[]  
+        - 해당 프로젝트가 속하는 모든 주요 공종/분야 (예: ["하수도", "상수도", "수자원개발"])
+        - "primary_original_field": string  
+        - 위 original_fields 중에서 **가장 핵심적인 1개** (예: "하수도")
 
-        CRITICAL: Korean names are typically 3 characters (e.g., "정환철", "김철수", "이영희")
-        - Extract the COMPLETE 3-character name
-        - This name is THE SAME for ALL projects
+        - "roles": string[]  
+        - 문서에서 확인되는 모든 담당업무 (예: ["건설사업관리(기술지원)", "시공감리"])
+        - "primary_role": string  
+        - 위 roles 중에서 **가장 주된 담당업무 1개** (예: "건설사업관리(기술지원)")
 
-        STEP 2 - FIND ALL PROJECTS FROM "1. 기술경력" SECTION:
-        Each project is a separate row in the table under "1. 기술경력".
-        Extract these fields for EACH project row:
+        작성 규칙:
+        - 날짜를 알 수 없으면 ""(빈 문자열)로 둡니다.
+        - 공종/담당업무는 문서 내용과 가장 가까운 표현을 사용하되,
+        문장형이 아닌 **짧은 라벨 형태**로 작성합니다. (예: "건설사업관리(기술지원)", "하수도")
+        - 여러 값이 명확히 보이면 반드시 original_fields, roles에 **모두 포함**하세요.
 
-        Required fields (extract ALL available information):
-        - engineer_name: Use the COMPLETE name from STEP 1 (SAME for all projects, usually 3 characters)
-        - project_name: Full project/contract name (사업명, 용역명, 공사명) - extract the COMPLETE name
-        - client: Ordering organization (발주처, 발주기관, 발주청) - extract the COMPLETE organization name
-        - start_date: Start date (YYYY-MM-DD format) - MUST have a value, search carefully
-        - end_date: End date (YYYY-MM-DD format) - MUST have a value, search carefully in the same row
-        - original_fields: Array of work types (공종, 분야) - can be multiple, extract ALL mentioned
-        - primary_original_field: Main work type (주공종) - typically first or most prominent
-        - roles: Array of job roles (담당업무, 직책) - can be multiple, extract ALL mentioned
-        - primary_role: Main job role (주담당업무) - typically first or most prominent
+        출력 형식(중요):
+        - 반드시 JSON 객체({{ ... }}) 하나만 출력합니다.
+        - 배열(List) 전체가 아니라, **최상위에 단일 객체**입니다.
+        - 마크다운(````json` 등) 금지, 설명 문장 금지.
 
-        CRITICAL FOR DATES:
-        - Each project row has BOTH start date AND end date
-        - Look for date pairs like "2020.02.20 ~ 2021.03.15" or "2005.03.31 ~ 2005.07.29"
-        - Convert ALL dates to YYYY-MM-DD format
-        - VALIDATE: Days must be 01-31, months must be 01-12
-        - If day is invalid (e.g., "84"), correct it (e.g., use last day of month)
+        예시 형식:
 
-        DATE CONVERSION RULES:
-        - "2005.03.31" → "2005-03-31"
-        - "05.03.31" → "2005-03-31" (assume 20xx for 00-23, 19xx for 24-99)
-        - "2005.04.01" → "2005-04-01"
-        - If end date is incomplete or invalid, estimate based on typical project duration
-        - NEVER output invalid dates like "2021-12-84" (day 84 doesn't exist!)
-
-        EXAMPLE OUTPUT (for 2 projects):
-        [
-        {{"engineer_name":"홍길동","project_name":"학성교가설공사","client":"울산시청","start_date":"1995-01-23","end_date":"1997-08-31","original_fields":["도로","교량"],"primary_original_field":"교량","roles":["설계","감리"],"primary_role":"설계"}},
-        {{"engineer_name":"홍길동","project_name":"번영로번영교신설공사","client":"울산광역시","start_date":"1998-03-01","end_date":"2000-12-31","original_fields":["교량"],"primary_original_field":"교량","roles":["감리"],"primary_role":"감리"}}
-        ]
-
-        CRITICAL OUTPUT RULES:
-        1. Output MUST be a JSON ARRAY starting with [ and ending with ]
-        2. NEVER output a single object - ALWAYS wrap in array brackets
-        3. Extract ALL projects from "1. 기술경력" section (typically 5-15 projects)
-        4. Each project MUST have both start_date and end_date in YYYY-MM-DD format
-        5. Dates MUST be valid (days 01-31, months must be 01-12)
-        6. Use THE SAME engineer_name for all projects
-        7. NO markdown, NO explanations, NO extra text
-        8. Output ONLY the raw JSON array
-
-        EXAMPLE - Your output MUST look like this:
-        [
-        {{"engineer_name":"정환철","project_name":"광양항서측인입철일괄임찰공사기본설계","client":"LG건설(주)","start_date":"2005-03-31","end_date":"2005-05-31","original_fields":["토목","설계"],"primary_original_field":"토목","roles":["설계"],"primary_role":"설계"}},
-        {{"engineer_name":"정환철","project_name":"군장국가상업탄지후안도로건설공사","client":"삼성물산(주)","start_date":"2005-06-01","end_date":"2005-09-20","original_fields":["토목","설계"],"primary_original_field":"토목","roles":["설계"],"primary_role":"설계"}}
-        ]
-
-        Begin extraction from "1. 기술경력" section:
-    """
+        {{
+        "project_name": "OO 노후상수관망 정비사업 통합건설사업관리용역",
+        "client": "화순군",
+        "start_date": "2023-01-01",
+        "end_date": "2025-12-31",
+        "original_fields": ["상수도", "하수도", "수자원개발"],
+        "primary_original_field": "하수도",
+        "roles": ["건설사업관리(기술지원)", "시공감리"],
+        "primary_role": "건설사업관리(기술지원)"
+        }}
+        """
 
     raw_text = _call_ollama(prompt)
 
-    print(f"[RAG] LLM response length: {len(raw_text)} characters")
-    print(f"[RAG] LLM response preview (200 chars): {raw_text[:200]}...")
-
-    # Debug: Save full LLM response to file for inspection
-    debug_path = DATA_DIR / "llm_debug_response.json"
-    try:
-        with open(debug_path, "w", encoding="utf-8") as f:
-            f.write(raw_text)
-        print(f"[RAG] Full LLM response saved to: {debug_path}")
-    except Exception as e:
-        print(f"[RAG] Failed to save debug response: {e}")
-
-    # Check for empty/minimal response indicating model failure
-    if len(raw_text) < 10 or raw_text.strip() in ["{}", "[]", ""]:
-        print("\n" + "="*70)
-        print("WARNING: LLM returned empty/minimal response!")
-        print("="*70)
-        print(f"Current model: {OLLAMA_MODEL}")
-        print("")
-        print("This usually means the model is too small for this task.")
-        print("The gemma3:4b model may struggle with complex Korean text extraction.")
-        print("")
-        print("RECOMMENDED SOLUTIONS:")
-        print("1. Try a larger model:")
-        print("   ollama pull gemma2:9b")
-        print("   ollama pull qwen2.5:7b")
-        print("   ollama pull llama3.1:8b")
-        print("")
-        print("2. Then update config.py or set environment variable:")
-        print("   export OLLAMA_MODEL=gemma2:9b")
-        print("   # or edit config.py: OLLAMA_MODEL = 'gemma2:9b'")
-        print("")
-        print("3. Restart the Streamlit app")
-        print("="*70 + "\n")
-
-    # --- [수정된 파싱 로직] ---
+    # Clean up the response from the LLM
     sanitized = raw_text.strip()
-
-    # 간단한 마크다운 블록 제거
-    if sanitized.startswith("```json"):
-        sanitized = sanitized[7:]
-        if sanitized.endswith("```"):
-            sanitized = sanitized[:-3]
-        sanitized = sanitized.strip()
     
-    data = None
+    # Look for single braces
+    first_brace = sanitized.find("{")
+    last_brace = sanitized.rfind("}")
+    
+    if first_brace == -1 or last_brace == -1 or last_brace < first_brace:
+        print(f"[RAG] ERROR: No valid JSON object found in LLM response.")
+        print(f"Raw output:\n{raw_text}")
+        return {} # Return empty dict
+
+    sanitized = sanitized[first_brace:last_brace + 1]
+    
     try:
-        # 1. 전체 문자열 파싱 시도
         data = json.loads(sanitized)
-    
-    except json.JSONDecodeError as e:
-        # 2. "Extra data" 오류 발생 시, 오류 지점까지만 잘라서 다시 파싱
-        print(f"[RAG] WARN: Full parse failed ({e}). Attempting partial parse.")
-        try:
-            failed_at_char = e.pos
-            sanitized_partial = sanitized[:failed_at_char].strip()
-            data = json.loads(sanitized_partial)
-            print(f"[RAG] Parsed partially (up to char {failed_at_char}).")
-        except Exception as e2:
-            # 3. 부분 파싱도 실패하면, 원본 오류를 발생시켜 streamlit에 표시
-            print(f"[RAG] ERROR: Partial parse also failed: {e2}")
-            print(f"--- Raw output from Ollama ---")
-            print(raw_text)
-            print(f"--- Sanitized partial attempt ---")
-            print(sanitized_partial)
-            print(f"---------------------------------")
-            raise e # 원본 오류(e)를 다시 발생시킴
-
-    # 4. 파싱 후 타입 체크
-    if not isinstance(data, list):
-        print(f"[RAG] ERROR: Parsed JSON is not a list as requested by prompt.")
-        print(f"--- Raw output from Ollama ---")
-        print(raw_text)
-        print(f"--- Parsed data ---")
-        print(data)
-        print(f"---------------------------------")
+        if not isinstance(data, dict):
+            raise ValueError("Parsed JSON is not a dictionary")
         
-        # AI가 실수로 List[Dict] 대신 Dict를 반환한 경우, 리스트로 감싸줌
-        if isinstance(data, dict):
-            print("[RAG] WARN: Data was a dict, wrapping in list.")
-            data = [data]
-        else:
-            return [] # 그 외의 경우(예: 문자열, 숫자)는 빈 리스트 반환
+    except Exception as e:
+        print(f"[RAG] ERROR: Failed to parse JSON object from Ollama.")
+        print(f"Raw output:\n{raw_text}")
+        print(f"Sanitized output:\n{sanitized}")
+        raise e
 
-    print(f"[RAG] Parsed {len(data)} project item(s) from AI.")
-
-    # Debug: Print detailed extraction summary
-    if data and len(data) > 0:
-        first_project = data[0].get("project_name", "(no name)")
-        engineer_name = data[0].get("engineer_name", "(no name)")
-        print(f"[RAG] Engineer name extracted: {engineer_name}")
-        print(f"[RAG] First project extracted: {first_project}")
-
-        # Show all project names for verification
-        all_projects = [p.get("project_name", "(no name)") for p in data]
-        print(f"[RAG] All {len(all_projects)} projects extracted:")
-        for i, pname in enumerate(all_projects, 1):
-            print(f"[RAG]   {i}. {pname}")
-
-        # Validate and warn about common issues
-        issues_found = []
-        for i, project in enumerate(data, 1):
-            # Check for missing end dates
-            if not project.get("end_date") or project.get("end_date", "").strip() == "":
-                issues_found.append(f"  Project {i} ({project.get('project_name', 'unknown')}): Missing end_date")
-
-            # Check for truncated engineer names (< 3 chars for Korean names)
-            eng_name = project.get("engineer_name", "")
-            if eng_name and len(eng_name) < 3 and any('\uac00' <= c <= '\ud7a3' for c in eng_name):
-                issues_found.append(f"  Project {i}: Engineer name '{eng_name}' seems truncated (Korean names are usually 3 characters)")
-
-            # Check for empty client
-            if not project.get("client") or project.get("client", "").strip() == "":
-                issues_found.append(f"  Project {i}: Missing client information")
-
-        if issues_found:
-            print(f"[RAG] WARNING: Data quality issues detected:")
-            for issue in issues_found:
-                print(f"[RAG] {issue}")
-            print(f"[RAG] Suggestion: The LLM may need more context. Consider:")
-            print(f"[RAG]   - Checking if the PDF has clear table structure")
-            print(f"[RAG]   - Increasing top_k to retrieve more chunks")
-            print(f"[RAG]   - Verifying OCR quality in terminal logs")
-    else:
-        print(f"[RAG] WARNING: No projects extracted!")
-
+    print(f"[RAG] Parsed 1 project item from AI.")
     return data

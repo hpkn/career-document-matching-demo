@@ -15,4 +15,4 @@ domain: https://ai-test.rs-team.com
 username: testuser 
 password: rsteamCOD001
 
-sudo systemctl reload career-demo.service
+sudo systemctl restart career-demo.service

@@ -144,3 +144,29 @@ def normalize_chunks_with_llm(split_docs: List[Document]) -> List[Document]:
 
     print(f"[LLM] Normalization complete")
     return normalized_docs
+
+
+def llm_decide(category, retrieved_chunks):
+    prompt = f"""
+        You are an expert in Korean Engineering Career Recognition (경력인정).
+        Below is the text extracted from the applicant's documents.
+
+        Relevant text:
+        {retrieved_chunks}
+
+        Question:
+        For the category: "{category}"
+
+        Determine:
+        - qualifies: true or false
+        - confidence: float 0.0 to 1.0
+        - evidence: 1–2 sentences explaining the reason
+
+        Return JSON ONLY:
+        {{"qualifies": ..., "confidence": ..., "evidence": "..."}}
+            """
+
+    res =  ollama_generate(prompt)
+
+    import json
+    return json.loads(res)

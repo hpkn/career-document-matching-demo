@@ -1,321 +1,216 @@
-import os
-import json
-import uuid
-from pathlib import Path
-from typing import List, Dict, Any
 import streamlit as st
 import pandas as pd
-from config import PDF_DIR, DATA_DIR # DATA_DIR 추가
-from ingest import build_index, clear_pdfs, clear_index # clear_index 임포트
-# [수정] get_raw_project_data만 임포트합니다.
-from rag import get_raw_project_data 
+import uuid
+from config import PDF_DIR, STEP1_INDEX_DIR
+from ingest import ingest_step1_multiple, get_final_report_json, main_extractor, clear_pdfs, clear_index
+from rag import get_step1_data
+from report_utils import get_form_layout
 from semantic_normalizer import normalize_project
 from rules_engine import apply_all_checkbox_rules
-# [수정] 새로운 계산 함수 임포트
-from report_utils import (
-    group_rules_by_category,
-    build_project_summary_text,
-    get_form_layout,
-    get_project_calculations,
-    get_project_calculations_as_json
-)
 
+st.set_page_config(page_title="Career Analysis Pipeline", layout="wide")
+st.title("Construction Career Analysis (Analysis Engine)")
 
-st.set_page_config(page_title="경력인정 자동완성 데모", layout="wide")
+if 'step' not in st.session_state: st.session_state.step = 1
+if 'step' not in st.session_state: st.session_state.step = 2
+if 'step2_records' not in st.session_state: st.session_state.step2_records = []
+if 'step1_norm_data' not in st.session_state: st.session_state.step1_norm_data = None
+if 'step1_rules' not in st.session_state: st.session_state.step1_rules = None
 
-st.title("경력인정 자동완성 Demo")
+def prev_step():
+    st.session_state.step -= 1
+    
+def reset_app():
+    st.session_state.step = 1
+    st.session_state.step2_records = []
+    st.session_state.step1_norm_data = None
+    st.session_state.step1_rules = None
 
-st.markdown("""
-    이 데모는 **업무 관련 PDF 파일**을 기반으로 프로젝트 경력을 추출하고,  
-    경력인정 가이드에 따라 **자동으로 체크박스를 판단**해 주는 시스템의 프로토타입입니다.
-
-    - 좌측: 파일 업로드 및 분석
-    - 우측: AI 추출 결과와 자동 체크 결과 요약
-""")
-
-
-# --- Sidebar: file upload & ingest ---------------------------------
-st.sidebar.header("1. 분석할 파일 업로드")
-st.sidebar.caption("여기에 프로젝트 파일(계약서, 공고 등)을 업로드하세요. 업로드 즉시 AI 메모리가 생성됩니다.")
-
-uploaded_files = st.sidebar.file_uploader(
-    "파일 업로드 (이전 파일은 삭제됩니다)",
-    type=["pdf"],
-    accept_multiple_files=True,
-    label_visibility="collapsed"
-)
-
-# Initialize session state for tracking processed files
-if "processed_files" not in st.session_state:
-    st.session_state.processed_files = set()
-
-# This block now cleans, saves, AND builds the index all at once.
-if uploaded_files:
-    # Create a unique hash of current uploaded files
-    current_files_hash = hash(tuple(f.name for f in uploaded_files))
-
-    # Only process if this is a NEW set of files
-    if current_files_hash not in st.session_state.processed_files:
-        saved_files_map = {}
-        with st.spinner("파일을 처리하고 AI 메모리를 생성하는 중..."):
-
-            # 1. Clear all old PDFs AND the old index
-            clear_pdfs()
-            clear_index()
-
-            # 2. Save new files with UUID names
+# --- STEP 1: Checkbox Guide (Native Text) ---
+# --- STEP 1: Checkbox Guide ---
+if st.session_state.step == 1:
+    st.header("Step 1: 경력인정 적용 가이드 (자동 체크)")
+    
+    clear_pdfs()
+    clear_index()
+    uploaded_files = st.file_uploader("PDF 업로드", type=["pdf"], accept_multiple_files=True)
+    
+    if uploaded_files and st.button("자동체크 실행"):
+        with st.spinner("Analyzing..."):
+            PDF_DIR.mkdir(parents=True, exist_ok=True)
+            saved_paths = []
             for f in uploaded_files:
-                original_name = f.name
-                file_extension = Path(original_name).suffix
+                path = PDF_DIR / f"s1_{uuid.uuid4().hex}.pdf"
+                with open(path, "wb") as out: out.write(f.read())
+                saved_paths.append(str(path))
 
-                # Create a short, unique filename
-                safe_name = f"{uuid.uuid4().hex}{file_extension}"
-                save_path = PDF_DIR / safe_name
+            if ingest_step1_multiple(saved_paths):
+                # Use the function name requested
+                query = "모든 프로젝트 이력을 하나의 JSON 객체로 종합"
+                raw_data = get_step1_data(query)
+                
+                if raw_data:
+                    norm = normalize_project(raw_data)
+                    st.session_state.step1_norm_data = norm
+                    
+                    st.session_state.step1_rules = apply_all_checkbox_rules(norm)
+                else:
+                    st.error("데이터 추출 실패.")
+            else:
+                st.error("텍스트를 찾을 수 없습니다.")
 
-                with open(save_path, "wb") as out:
-                    out.write(f.read())
+    if st.session_state.step1_norm_data:
+        norm = st.session_state.step1_norm_data
+        rules = st.session_state.step1_rules
+        layout = get_form_layout()
 
-                saved_files_map[safe_name] = original_name
-
-            # 3. Save the name map for the ingest script
-            map_save_path = DATA_DIR / "uuid_name_map.json"
-            with open(map_save_path, "w", encoding="utf-8") as f_map:
-                json.dump(saved_files_map, f_map, ensure_ascii=False, indent=2)
-
-            # 4. Build new index immediately
-            build_index()
-
-            # Mark these files as processed
-            st.session_state.processed_files.add(current_files_hash)
-
-        st.sidebar.success(f"✅ {len(saved_files_map)}개 파일로 AI 메모리 생성 완료!")
-        st.sidebar.info("이제 '분석 실행' 버튼을 누르세요.")
-    else:
-        # Files already processed, just show status
-        st.sidebar.success(f"✅ {len(uploaded_files)}개 파일 준비됨")
-        st.sidebar.info("'분석 실행' 버튼을 누르세요.")
-
-
-st.sidebar.header("2. 분석 실행")
-st.sidebar.caption("업로드된 파일의 내용을 종합하여 양식을 채웁니다.")
-
-run_button = st.sidebar.button("✔️ 양식 자동 채우기 실행")
-
-
-# --- Main action ----------------------------------------------------
-if run_button:
-    try:
-        with st.spinner("AI가 문서를 분석하고 경력을 추출 중입니다... 잠시만 기다려 주세요."):
-            query = "모든 프로젝트 이력을 JSON 리스트로 종합"
-            # [수정] 이제 raw_project_data는 리스트(List[Dict])입니다.
-            raw_project_data: List[Dict[str, Any]] = get_raw_project_data(query)
-
-        if not raw_project_data:
-            st.error("추출된 프로젝트 이력이 없습니다. PDF 파일을 업로드했는지 확인해 주세요.")
-            st.info("터미널/콘솔 로그를 확인하여 PDF 처리 상태를 확인하세요.")
-        elif len(raw_project_data) == 1 and not raw_project_data[0].get("project_name"):
-            st.error("프로젝트 정보가 비어있습니다. AI가 문서에서 프로젝트를 추출하지 못했습니다.")
-            st.warning("가능한 원인:")
-            st.write("- PDF가 이미지 스캔본이고 OCR이 실패했을 수 있습니다")
-            st.write("- PDF에 프로젝트 정보가 포함되지 않았을 수 있습니다")
-            st.write("- AI 모델(Ollama)이 응답하지 않거나 오류가 발생했습니다")
-            st.info("터미널/콘솔에서 [INGEST]와 [RAG] 로그를 확인하세요.")
-        else:
-            # [수정] 모든 프로젝트를 순회하며 정규화 및 규칙 적용
-            all_projects_rules = []
-            for raw_project in raw_project_data:
-                normalized_project = normalize_project(raw_project)
-                project_rules_series = apply_all_checkbox_rules(normalized_project)
-                all_projects_rules.append(project_rules_series)
+        st.info(f"**기술인:** {norm.get('engineer_name')} | **직무:** {norm.get('role')}")
+        st.markdown("---")
+        
+        # RENDER LOOP
+        for sec_key, section in layout.items():
+            st.subheader(section.get("title", sec_key))
             
-            # [수정] 리스트를 DataFrame으로 변환
-            projects_df = pd.DataFrame(all_projects_rules)
-            
-            # [수정] 결과 1은 첫 번째 프로젝트를 대표로 사용
-            project_rules_series = all_projects_rules[0]
-
-
-            # --- [결과 1: 체크박스 폼] ---
-            st.subheader("결과 1: 경력인정 가이드 자동 체크 (대표 프로젝트 기준)")
-            st.caption(f"총 {len(projects_df)}개의 프로젝트가 추출되었습니다. 아래는 첫 번째 프로젝트의 자동 체크 결과입니다.")
-
-            form_layout = get_form_layout()
-            grouped_rules = group_rules_by_category()
-
-            def render_checkbox_row(checked: bool, label: str) -> str:
-                box = "☑" if checked else "☐"
-                return f"{box} {label}"
-
-            st.markdown("---")
-            
-            # AI가 추출한 핵심 정보 변수들 (대표 프로젝트 기준)
-            project_name = project_rules_series.get("project_name") or "(사업명 없음)"
-            client_raw = project_rules_series.get("client_raw") or project_rules_series.get("client") or "(발주처 정보 없음)"
-            client_type = project_rules_series.get("client_type") or "정보 없음"
-            role = project_rules_series.get("role") or "(담당업무 정보 없음)" # 'primary_role'이 여기에 할당됨
-            start_date = project_rules_series.get("start_date") or "-"
-            end_date = project_rules_series.get("end_date") or "-"
-            use_date_type = project_rules_series.get("use_date_type") or "-"
-            primary_field = project_rules_series.get("primary_original_field") or "(주 공종 정보 없음)"
-
-            date_label_map = {
-                "participation": "참여일 기준",
-                "recognition": "인정일 기준",
-                "-": "기준일 정보 없음",
-                "": "기준일 정보 없음",
-            }
-            date_label = date_label_map.get(use_date_type, f"{use_date_type} 기준")
-
-            st.markdown(
-                f"""
-    **📌 대표 프로젝트 기본 정보 (AI 추출)**
-
-    - 사업명: **{project_name}**
-    - 발주처: **{client_raw}** (분류: {client_type})
-    - 담당업무: **{role}**
-    - 참여기간: **{start_date} ~ {end_date}**
-    - 평가 기준 일자: **{date_label}**
-    """
-            )
-            st.markdown("")
-
-            # 체크박스 폼 렌더링 (대표 프로젝트 기준)
-            for section_key, section in form_layout.items():
-                st.markdown(f"#### 🧾 {section['title']}")
-
-                for q in section["questions"]:
-                    st.markdown(f"**{q['title']}**")
-
-                    options = q["options"]
-                    num_cols = min(len(options), 4) 
-                    cols = st.columns(num_cols)
-
+            if "questions" in section:
+                for q_idx, question in enumerate(section["questions"]):
+                    st.markdown(f"**{question['title']}**")
+                    options = question.get("options", [])
+                    cols = st.columns(4)
+                    
                     for i, opt in enumerate(options):
-                        col = cols[i % num_cols]
-                        rid = opt["rule_id"]
-                        col_name = f"rule__{rid}"
-                        checked = bool(project_rules_series.get(col_name, False)) 
-                        with col:
-                            st.markdown(render_checkbox_row(checked, opt["label"]))
-
-                    st.markdown("") 
-
-            # [수정] 텍스트 요약은 모든 프로젝트를 합산하는 로직이 필요하나,
-            # 우선 대표 프로젝트의 요약만 표시하도록 유지 (기존 로직)
-            with st.expander("텍스트 형식 요약 보기 (대표 프로젝트)", expanded=False):
-                summary_text = build_project_summary_text(
-                    project_rules_series,
-                    grouped_rules,
-                    show_only_checked=True,
-                )
-                st.markdown(f"```text\n{summary_text}\n```")
-
-            export_text = build_project_summary_text(
-                project_rules_series, 
-                grouped_rules, 
-                show_only_checked=True
-            )
-
-            st.download_button(
-                label="📥 텍스트 리포트 다운로드 (대표 프로젝트)",
-                data=export_text,
-                file_name="경력인정_자동판정_리포트_대표.txt",
-                mime="text/plain",
-            )
-            
-            # --- [결과 2: 요청하신 PDF 양식의 텍스트 리포트 (모든 프로젝트 합산)] ---
-            
+                        rule_id = opt.get('rule_id') or opt.get('id')
+                        rule_key = f"rule__{rule_id}"
+                        is_checked = rules.get(rule_key, False)
+                        widget_key = f"{sec_key}_{q_idx}_{i}_{rule_id}"
+                        
+                        cols[i % 4].checkbox(opt['label'], value=is_checked, key=widget_key, disabled=True)
+                    st.markdown("")
             st.markdown("---")
-            st.header("결과 2: 참여기술인 경력 사항 (전체 프로젝트 합산)")
-            st.caption("AI가 추출한 모든 프로젝트 정보를 기반으로 평점 및 경력을 자동 계산한 결과입니다.")
+
+        if st.button("다음 단계로 (Next)"):
+            st.session_state.step = 2
+            st.rerun()
+
+
+
+# --- STEP 2: Hybrid Table Extraction (Direct OCR -> LLM) ---
+# elif st.session_state.step == 2:
+
+if st.session_state.step == 2:
+    st.header("Step 2: 상세 경력 추출 (Page-by-Page)")
+    uploaded_file = st.file_uploader("PDF 파일 업로드 (기술경력)", type=["pdf"], key="s2")
+    
+    if uploaded_file and st.button("경력 추출 실행"):
+        with st.spinner("페이지별 데이터 추출 중..."):
+            path = PDF_DIR / f"s2_{uuid.uuid4().hex}.pdf"
+            with open(path, "wb") as f: f.write(uploaded_file.read())
             
-            # [수정] report_utils의 함수에 단일 Series가 아닌 전체 DataFrame을 전달
-            try:
-                calc_data = get_project_calculations(projects_df)
-                d_career = calc_data["career_details"]
-                d_job = calc_data["job_field_details"]
-
-                # --- 1. 경력 사항 렌더링 ---
-                st.subheader("참여기술인 경력 사항")
-                
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("성명", d_career["성명"])
-                col2.metric("분야", d_career["분야"])
-                col3.metric("총 환산 경력", f"{d_career['total_score_months']} 개월")
-                col4.metric("경력 평점", d_career["평점"])
-                st.caption(f"환산 기준 경력: {d_career['현재까지 경력']}")
-                
-                # [수정] "해당"과 "비해당"을 별도로 렌더링
-                st.markdown(f"**{d_career['classification_label']}**")
-                
-                with st.expander(f"✅ 해당분야 용역참여실적 ({len(d_career['해당분야 용역참여실적'])}건)"):
-                    if not d_career['해당분야 용역참여실적']:
-                        st.info("해당 분야 실적이 없습니다.")
-                    for record in d_career['해당분야 용역참여실적']:
-                        st.markdown(f"• **{record['용역명']}** ({record['발주기관']}, {record['참여기간']})")
-                
-                with st.expander(f"⚪ 해당분야 이외 참여실적 ({len(d_career['해당분야 이외 참여실적'])}건)"):
-                    if not d_career['해당분야 이외 참여실적']:
-                        st.info("해당 분야 이외 실적이 없습니다.")
-                    for record in d_career['해당분야 이외 참여실적']:
-                        st.markdown(f"• **{record['용역명']}** ({record['발주기관']}, {record['참여기간']})")
-
-                
-                # --- 2. 직무분야 실적 렌더링 ---
-                st.subheader("참여기술인 직무분야 실적")
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("성명", d_job["책임건설사업관리기술인"])
-                col2.metric("총 직무 경력", f"{d_job['total_job_months']} 개월")
-                col3.metric("직무 평점", d_job["평점"])
-                st.caption(f"총 실제 경력: {d_job['현재까지 경력']}")
-
-                with st.expander("포함된 직무 분야 (AI 추출)"):
-                    st.write(d_job["직무분야"])
-                
-                with st.expander(f"관련 용역 참여 실적 ({len(d_job['용역참여실적'])}건)"):
-                    for record_str in d_job["용역참여실적"]:
-                        st.markdown(f"• {record_str}")
-
-                # --- 3. JSON 다운로드 버튼 추가 ---
-                st.markdown("---")
-                st.subheader("📥 JSON 다운로드")
-
-                try:
-                    json_data = get_project_calculations_as_json(projects_df)
-                    import json
-                    json_string = json.dumps(json_data, ensure_ascii=False, indent=2)
-
-                    st.download_button(
-                        label="📥 경력 사항 JSON 다운로드",
-                        data=json_string,
-                        file_name="경력인정_결과.json",
-                        mime="application/json",
-                    )
-
-                    # JSON 미리보기
-                    with st.expander("JSON 미리보기"):
-                        st.json(json_data)
-
-                except Exception as json_error:
-                    st.error(f"JSON 생성 중 오류: {json_error}")
-                    import traceback
-                    st.error(traceback.format_exc())
-
-            except Exception as e:
-                st.error(f"경력 요약본 생성 중 오류 발생: {e}")
-                import traceback
-                st.error(traceback.format_exc())
-
-            # --- [로직 끝] ---
+            records = main_extractor(path)
             
-    except RuntimeError as e:
-        if "No such file or directory" in str(e):
-            st.error("FAISS 인덱스 파일을 찾을 수 없습니다. 먼저 PDF 파일을 업로드해주세요.")
-        else:
-            st.error(f"오류 발생: {e}")
-    except Exception as e:
-        st.error(f"예상치 못한 오류 발생: {e}")
+            
+            if records:
+                st.session_state.step2_records = records
+                if not records: st.warning("데이터를 찾을 수 없습니다.")
+            else:
+                st.error("OCR 실패.")
 
-else:
-    st.info("좌측 사이드바에서 PDF를 업로드하면 분석이 시작됩니다.")
+    if st.session_state.step2_records:
+        st.success(f"추출된 데이터: {len(st.session_state.step2_records)}건")
+        df = pd.DataFrame(st.session_state.step2_records)
+        
+        disp = pd.DataFrame()
+        
+        disp ['참여기간']= df.get('participation_period_start', '')+ "~" + df.get('participation_period_end', '')
+        disp ['인정일']= df.get('recognized_days', '')
+        disp ['참여일']= df.get('participated_days', '')
+        disp ['사업명']= df.get('project_name', '')
+        disp ['발주자']= df.get('client', '')
+        disp ['공사종류']= df.get('project_type', '')
+        disp ['공사(용역)개요']= df.get('project_overview', '')
+        disp ['적용공법']= df.get('applied_method', '')
+        disp ['적용_융_복합건설기술']= df.get('applied_convergence_tech', '')
+        disp ['직무분야']= df.get('job_field', '')
+        disp ['전문분야']= df.get('specialty_field', '')
+        disp ['책임정도']= df.get('responsibility_level', '')
+        disp ['적용신기술']= df.get('applied_new_tech', '')
+        disp ['담당업무']= df.get('assigned_task', '')
+        disp ['직위']= df.get('position', '')
+        disp ['공사(용역)금액(백만원)']= df.get('project_amount_million_won', '')
+        disp ['시설물종류']= df.get('facility_type', '')
+        disp ['성명'] = df.get('person_name', '')
+        # disp ['']= df.get('page_number', '')
+        # disp ['']= df.get('entry_number', '')
+        
+        # def calc_confidence(row):
+        #     score = 1.0
+        #     if not row.get('project_name'): score -= 0.3
+        #     if not row.get('start_date'): score -= 0.3
+        #     if not row.get('client'): score -= 0.2
+        #     return f"{max(0, score):.1f}"
+            
+        # disp['confidence'] = df.apply(calc_confidence, axis=1)
+        
+        st.dataframe(disp, use_container_width=True)
+
+        if st.button("Next → Step 3"):
+            st.session_state.step = 3
+            st.rerun()
+            
+    if st.button("Back"):
+        st.session_state.step = 1
+        st.rerun()
+
+
+
+# --- STEP 3 ---
+# ... (Imports and setup) ...
+
+# --- STEP 3 ---
+elif st.session_state.step == 3:
+    st.header("Step 3: 최종 평가 리포트 (사업수행능력평가)")
+    
+    report = get_final_report_json(st.session_state.step2_records)
+    
+    if report:
+        career = report.get('career_history', {})
+        h = career.get('header', {})
+        
+        st.subheader(f"📋 {h.get('division', '평가 결과')} | {h.get('name', '')}")
+        
+        # Top Level Metrics
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("성명", h.get('name', '-'))
+        c2.metric("주 직무분야", h.get('field', '-'))
+        c3.metric("환산 경력", h.get('total_career', '-'))
+        c4.metric("종합 평점", h.get('score', '-'))
+        
+        # Detailed Score Breakdown
+        details = h.get('details', {})
+        st.info(f"**점수 상세:** 해당분야 경력 {details.get('exp_score', '-')} + 직무분야 실적 {details.get('job_score', '-')}")
+        
+        st.divider()
+        
+        # Project Tables
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("### ✅ 해당분야 (100%)")
+            if career.get('relevant'):
+                st.dataframe(pd.DataFrame(career['relevant']), hide_index=True, use_container_width=True)
+            else:
+                st.caption("실적 없음")
+        with c2:
+            st.markdown("### ⚪ 기타 (60%)")
+            if career.get('other'):
+                st.dataframe(pd.DataFrame(career['other']), hide_index=True, use_container_width=True)
+            else:
+                st.caption("실적 없음")
+
+    if st.button("처음으로 (Restart)"):
+        reset_app()
+        st.rerun()
+    
+    st.button("← Back", on_click=prev_step)
+    # Back button is handled in the sidebar or main flow usually, but can be added here
+    # if st.button("← Back"): 
+    #     st.session_state.step = 2
+    #     st.rerun()

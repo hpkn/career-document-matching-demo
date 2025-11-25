@@ -1,25 +1,24 @@
-"""
-Rules engine for evaluating project eligibility criteria.
-
-Applies checkbox rules from rules_config.py to normalized project data,
-determining which career recognition criteria each project meets.
-"""
-from typing import List, Dict, Any
-import copy
+# ============================================================
+# rules_engine.py
+# Evaluates rules for Step 1 checkbox logic
+# ============================================================
 import pandas as pd
-
+from typing import Dict, Any
+import datetime
 from rules_config import CHECKBOX_RULES
+import copy
+# ------------------------------------------------------------
+# UTILITIES
+# ------------------------------------------------------------
 
 
+# ------------------------------------------------------------
+# MAIN ENTRYPOINT — Called by Step 1
+# ------------------------------------------------------------
 def _normalize_text(value: Any) -> str:
-    """
-    --- THIS IS THE MISSING FUNCTION ---
-    Safely converts any value to a normalized string.
-    """
-    if value is None:
-        return ""
+    """Safely converts any value to a normalized string."""
+    if value is None: return ""
     return str(value).strip()
-
 
 def _eval_rule_logic(project: Dict[str, Any], logic: Dict[str, Any]) -> bool:
     """
@@ -65,6 +64,8 @@ def _eval_rule_logic(project: Dict[str, Any], logic: Dict[str, Any]) -> bool:
     return False
 
 
+
+  
 def apply_all_checkbox_rules(normalized_project: Dict[str, Any]) -> pd.Series:
     """
     normalized_project: A SINGLE project dict (already normalized)

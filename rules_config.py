@@ -17,25 +17,39 @@ CHECKBOX_RULES = [
     },
 
     # === 발주처 (상주 / 기술지원 / 직무분야 공통) ===
+    # === 2. 경력 작성에 포함시킬 발주처 선택 (필드 변경: client -> client_type) ===
     {
         "id": "orderer.article2_6",
         "label": "경력 작성 발주처 / 제2조6항",
         "category": "발주처",
         "group": "상주/기술지원/직무공통",
-        "logic": { "type": "keyword_any", "field": "client", "keywords": ["국가", "지방자치단체", "공공기관", "지방공기업", "광역자치단체", "기초자치단체", "정부투자기관", "국토관리청", "한국도로공사", "경기도건설본부"] },
+        # [FIX] field를 'client_type'으로 변경하여 분류된 결과(기초자치단체 등)와 매칭
+        "logic": { "type": "keyword_any", "field": "client_type", "keywords": ["국가", "지방자치단체", "공공기관", "지방공기업", "광역자치단체", "기초자치단체", "정부투자기관", "국토관리청", "한국도로공사", "경기도건설본부"] },
     },
     {
         "id": "orderer.private",
         "label": "경력 작성 발주처 / 민간사업",
         "category": "발주처",
         "group": "상주/기술지원/직무공통",
-        "logic": { "type": "keyword_any", "field": "client", "keywords": ["민간", "민자", "주식회사", "㈜", "유한회사"] },
+        "logic": { "type": "keyword_any", "field": "client_type", "keywords": ["민간", "민자", "주식회사", "㈜", "유한회사", "건설", "엔지니어링"] },
     },
-    { "id": "orderer.blank", "label": "경력 작성 발주처 / 발주처 빈칸", "category": "발주처", "group": "직무분야 공통", "logic": { "type": "field_value", "field": "client_raw", "equals": "" } },
-
+    { 
+        "id": "orderer.blank", 
+        "label": "경력 작성 발주처 / 발주처 빈칸", 
+        "category": "발주처", 
+        "group": "직무분야 공통", 
+        "logic": { "type": "field_value", "field": "client_raw", "equals": "" } 
+    },  
     # === 상주 해당분야 / 2.1. 제2조6항 선택시 ===
     { "id": "sangju.orderer.gov_100", "label": "상주 / 제2조6항 발주처 100%", "category": "상주 해당분야", "group": "발주처 세부", "logic": { "type": "keyword_any", "field": "client", "keywords": ["국가", "지방자치단체", "공공기관", "지방공기업", "광역자치단체", "경기도건설본부"] } },
-    { "id": "sangju.orderer.local_gov", "label": "상주 / 광역자치단체100%, 기초자치단체60%", "category": "상주 해당분야", "group": "발주처 세부", "logic": { "type": "keyword_any", "field": "client", "keywords": ["광역자치단체", "기초자치단체", "경기도건설본부"] } },
+    { 
+        "id": "sangju.orderer.local_gov", 
+        "label": "상주 / 광역자치단체100%, 기초자치단체60%", 
+        "category": "상주 해당분야", "group": "발주처 세부", 
+        # "logic": { "type": "keyword_any", "field": "client", "keywords": ["광역자치단체", "기초자치단체", "경기도건설본부"] } 
+        "logic": { "type": "keyword_any", "field": "client_type", "keywords": ["광역자치단체", "기초자치단체", "지방자치단체", "경기도건설본부"] }
+    },
+    
     { "id": "sangju.orderer.gov_invest_60", "label": "상주 / 정부투자기관 60%", "category": "상주 해당분야", "group": "발주처 세부", "logic": { "type": "keyword_any", "field": "client", "keywords": ["정부투자기관"] } },
 
     # === 상주 해당분야 / 3. 공종 (대분류) ===
@@ -55,20 +69,17 @@ CHECKBOX_RULES = [
 
     # === 상주 해당분야 / 3.1. 분야별 세부공종 (도로) ===
     # (These check project_name - this is correct)
-    { "id": "sangju.field.road.detail.road", "label": "상주 / 도로 / 도로", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["도로"] } },
-    { "id": "sangju.field.road.detail.national_road", "label": "상주 / 도로 / 국도", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["국도"] } },
-    { "id": "sangju.field.road.detail.local_road", "label": "상주 / 도로 / 지방도", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["지방도"] } },
-    { "id": "sangju.field.road.detail.gukjido", "label": "상주 / 도로 / 국지도", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["국지도"] } },
-    { "id": "sangju.field.road.detail.expressway", "label": "상주 / 도로 / 고속국도(고속도로)", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["고속국도", "고속도로"] } },
-    { "id": "sangju.field.road.detail.underpass", "label": "상주 / 도로 / 지하차도", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["지하차도"] } },
-    { "id": "sangju.field.road.detail.pavement", "label": "상주 / 도로 / 포장", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["포장"] } },
-    { "id": "sangju.field.road.detail.bridge", "label": "상주 / 도로 / 교량", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["교량"] } },
-    { "id": "sangju.field.road.detail.general_bridge", "label": "상주 / 도로 / 일반교량", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["일반교량"] } },
-    { "id": "sangju.field.road.detail.tunnel", "label": "상주 / 도로 / 터널", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["터널"] } },
-    { "id": "sangju.field.road.detail.overpass", "label": "상주 / 도로 / 보도육교", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["보도육교"] } },
-    { "id": "sangju.field.road.detail.expansion", "label": "상주 / 도로 / 확포장도로", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["확포장도로", "도로확포장"] } },
-    { "id": "sangju.field.road.detail.civil_60", "label": "상주 / 도로 / 토목분야(체크공종제외)60%", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "field_value", "field": "recognition_rate_rule", "equals": "civil_60" } },
-
+    # === 3.1. 세부공종 ===
+    { "id": "sangju.field.road.detail.road", "label": "도로/국도/지방도", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "original_fields", "keywords": ["도로"] } },
+    { "id": "sangju.field.road.detail.national_road", "label": "국도", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "project_name", "keywords": ["국도"] } },
+    { "id": "sangju.field.road.detail.bridge", "label": "교량", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "original_fields", "keywords": ["교량"] } },
+    { "id": "sangju.field.road.detail.tunnel", "label": "터널", "category": "상주 해당분야", "group": "도로 세부공종", "logic": { "type": "keyword_any", "field": "original_fields", "keywords": ["터널"] } },
+    
+    { "id": "sangju.field.river.detail.maintenance", "label": "하천정비", "category": "상주 해당분야", "group": "하천 세부공종", "logic": { "type": "keyword_any", "field": "original_fields", "keywords": ["하천"] } },
+    
+    { "id": "sangju.field.water.detail.supply", "label": "상수도", "category": "상주 해당분야", "group": "상하수도 세부공종", "logic": { "type": "keyword_any", "field": "original_fields", "keywords": ["상수도"] } },
+    { "id": "sangju.field.water.detail.supply_sewage", "label": "상하수도", "category": "상주 해당분야", "group": "상하수도 세부공종", "logic": { "type": "keyword_any", "field": "original_fields", "keywords": ["상하수도"] } },
+    { "id": "sangju.field.water.detail.sewage_pipe", "label": "하수도/하수관로", "category": "상주 해당분야", "group": "상하수도 세부공종", "logic": { "type": "keyword_any", "field": "original_fields", "keywords": ["하수도"] } },
     # === 상주 해당분야 / 3.1. 분야별 세부공종 (하천) ===
     # ... (all other 3.x sub-fields remain the same, checking project_name or recognition_rate_rule) ...
     { "id": "sangju.field.river.detail.civil_60", "label": "상주 / 하천 / 토목분야(체크공종제외)60%", "category": "상주 해당분야", "group": "하천 세부공종", "logic": { "type": "field_value", "field": "recognition_rate_rule", "equals": "civil_60" } },
@@ -193,3 +204,4 @@ CHECKBOX_RULES = [
     { "id": "duty_field2.recognition.include_blank_duty", "label": "직무분야2 / 담당업무 빈칸도 적용", "category": "상주 직무분야2", "group": "경력 인정사항", "logic": { "type": "field_value", "field": "duty_field2_recognition_rule", "equals": "include_blank_duty" } },
     { "id": "duty_field2.recognition.only_filled", "label": "직무분야2 / 공종 및 담당업무 기재 된 사업만 적용", "category": "상주 직무분야2", "group": "경력 인정사항", "logic": { "type": "field_value", "field": "duty_field2_recognition_rule", "equals": "only_filled" } },
 ]
+
