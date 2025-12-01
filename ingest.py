@@ -1,23 +1,15 @@
 # ======================================================================
 # ingest.py  — FINAL VERSION (Option C: Full OpenCV Table Segmentation)
-# ======================================================================
-
-import os
-import io
+# =====================================================================
 import re
 import fitz
-import cv2
+# import cv2
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Any
-from PIL import Image
 import faiss
 import easyocr
-from semantic_normalizer import normalize_project, normalize_tech_data_df
-from rules_engine import apply_all_checkbox_rules
-from rag import extract_clean_json_from_llm
-import pytesseract
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter

@@ -7,5 +7,5 @@ source .venv/bin/activate
 #### access url: https://ai-test.rs-team.com
 
 ### Local
-#### streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+#### streamlit run app.py --server.port 8501 --server.address 127.0.0.1
 #### Access: localhost:8501
