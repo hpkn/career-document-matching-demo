@@ -2,14 +2,10 @@
 # ingest.py  — FINAL VERSION (Option C: Full OpenCV Table Segmentation)
 # =====================================================================
 import re
-import fitz
-# import cv2
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from typing import List, Dict, Any
 import faiss
-import easyocr
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -18,23 +14,21 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from config import PDF_DIR, INDEX_DIR, DATA_DIR, STEP1_INDEX_DIR, STEP2_INDEX_DIR
 import json
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from pathlib import Path
+import pandas as pd
+from rules_config import CHECKBOX_RULES
+import fitz
+
 try:
     import pdfplumber
 except ImportError:
-    print("Error: pdfplumber not installed. Run: pip install pdfplumber")
-    exit(1)
+    raise ImportError("pdfplumber not installed. Run: pip install pdfplumber") 
 
-# import fitz  # PyMuPDF
-# import pytesseract
-# from PIL import Image
-# import io
-# from config import STEP1_INDEX_DIR, STEP2_INDEX_DIR
 # =====================================================================
 # GLOBAL OCR READER
 # =====================================================================
-reader = easyocr.Reader(["ko", "en"], gpu=False)
+# reader = easyocr.Reader(["ko", "en"], gpu=False)
 
 DATE = re.compile(r"(\d{4}[.\-/]\d{2}[.\-/]\d{2})")
 DATE_RANGE = re.compile(r"(\d{4}[.\-/]\d{2}[.\-/]\d{2}).*?(\d{4}[.\-/]\d{2}[.\-/]\d{2})")
@@ -87,7 +81,7 @@ def clear_index():
             print(f"Failed to delete {f}: {e}")
     print(f"Deleted {deleted_count} index files.")
 def normalize_project_name(name: str) -> str:
-    import re
+
     if not isinstance(name, str):
         return ""
 
@@ -201,7 +195,7 @@ def normalize_date(raw):
         return ""
 
 
-def diff_days(start, end):
+def diff_days(start, end) -> int:
     try:
         s = datetime.strptime(start, "%Y-%m-%d")
         e = datetime.strptime(end, "%Y-%m-%d")
@@ -209,11 +203,11 @@ def diff_days(start, end):
     except:
         return 0
 
-def warn(msg: str):
+def warn(msg: str) -> None:
     print(f"[WARN] {msg}")
 
 
-def err(msg: str):
+def err(msg: str) -> None:
     print(f"[ERROR] {msg}")
 
 
@@ -407,14 +401,18 @@ def find_career_section(page_texts: Dict[int, str]) -> List[int]:
 
 def extract_tables_from_page(pdf_path, page_num: int) -> List[List[List]]:
     """Extract all tables from a page"""
-    with pdfplumber.open(pdf_path) as pdf:
-        if page_num > len(pdf.pages):
-            return []
-        
-        page = pdf.pages[page_num - 1]
-        tables = page.extract_tables()
-        return tables if tables else []
-
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            if page_num > len(pdf.pages):
+                return []
+            
+            page = pdf.pages[page_num - 1]
+            tables = page.extract_tables()
+            return tables if tables else []
+    except Exception as e:
+        print(f"[ERROR] Failed to extract tables from page {page_num}: {e}")
+        return []
+    
 def find_header_row(table: List[List]) -> int:
     """
     Find Case 1 (header row) which contains '참여기간'
@@ -638,7 +636,6 @@ def extract_all_entries(pdf_path) -> List[CareerEntry]:
             print(f"  Extracted {len(entries)} entries from table {table_idx}")
             all_entries.extend(entries)
     
-    entries = all_entries
     return all_entries
 
 def _extract_dates_from_text(text: str) -> List[Tuple[str, str, str, str]]:
@@ -864,9 +861,6 @@ def main_extractor(pdf_path):
 # =====================================================================
 # STEP 3 — FAISS
 # =====================================================================
-import pandas as pd
-import re
-from rules_config import CHECKBOX_RULES
 
 
 def group_rules_by_category():
@@ -935,6 +929,452 @@ def classify_relevance(primary_field: str, project_name: str, project_type: str)
 
     # Extendable for 건축/기계/조경 분야 later
     return False
+
+
+def get_data_breakdown(step2_data: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+    """
+    Analyze Step 2 data and return breakdown of values by field.
+
+    Returns: {
+        'project_type': {'하천': 45, '교량': 38, '도로': 52, ...},
+        'assigned_task': {'감독': 120, '설계': 80, '시공': 45, ...},
+        'job_field': {'토목': 250, '건축': 20, ...}
+    }
+    """
+    from collections import Counter
+
+    if not step2_data:
+        return {}
+
+    # Count values for each field
+    project_types = Counter()
+    assigned_tasks = Counter()
+    job_fields = Counter()
+    clients = Counter()
+
+    for record in step2_data:
+        # Project type (공종)
+        pt = str(record.get('project_type', '') or '').strip()
+        if pt:
+            project_types[pt] += 1
+
+        # Assigned task (담당업무)
+        at = str(record.get('assigned_task', '') or '').strip()
+        if at:
+            assigned_tasks[at] += 1
+
+        # Job field (직무분야)
+        jf = str(record.get('job_field', '') or '').strip()
+        if jf:
+            job_fields[jf] += 1
+
+        # Client (발주처)
+        cl = str(record.get('client', '') or '').strip()
+        if cl:
+            clients[cl] += 1
+
+    return {
+        'project_type': dict(project_types),
+        'assigned_task': dict(assigned_tasks),
+        'job_field': dict(job_fields),
+        'client': dict(clients),
+        'total_records': len(step2_data)
+    }
+
+
+def get_final_report_with_llm(
+    step1_rules: Dict[str, bool],
+    step2_data: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    Generate Step 3 report by filtering Step 2 data based on Step 1 checked rules.
+
+    Mapping Logic:
+    1. 기간 -> 인정일/참여일 selection
+    2. 발주처 -> Filter by client type (제2조6항=public, else=others)
+    3. 공사종류 -> Main category filter (도로, 하천, etc.)
+    3.1. 세부공종 -> Detailed category filter
+    4. 담당업무 -> Role/task filter
+    5. 직무분야 -> Job field filter (토목, 건축, 기계, etc.)
+
+    Args:
+        step1_rules: Dict of rule_id -> bool (True = checked/applicable)
+        step2_data: List of career entry dicts from Step 2
+
+    Returns:
+        Final report JSON with filtered results
+    """
+    if not step2_data:
+        return {}
+
+    # Extract checked rule IDs (remove "rule__" prefix)
+    checked_rules = set(
+        rule_id.replace("rule__", "")
+        for rule_id, is_checked in step1_rules.items()
+        if is_checked
+    )
+
+    if not checked_rules:
+        print("[Step3] No checked rules found, showing all as 기타")
+        return _build_report_from_filtered(step2_data, [], step2_data, [])
+
+    # Build filter criteria from checked rules
+    filter_criteria = _extract_filter_criteria(checked_rules)
+    print(f"[Step3] Filter criteria: {filter_criteria}")
+
+    # Convert to DataFrame for easier processing
+    df = pd.DataFrame(step2_data)
+
+    # DEBUG: Print first 3 records to see actual field values
+    print(f"[DEBUG] Total records: {len(df)}")
+    if not df.empty:
+        print(f"[DEBUG] Sample records (first 3):")
+        for i, row in df.head(3).iterrows():
+            print(f"  Record {i}:")
+            print(f"    project_type='{row.get('project_type', '')}' | project_name='{row.get('project_name', '')[:30]}...'")
+            print(f"    job_field='{row.get('job_field', '')}' | assigned_task='{row.get('assigned_task', '')}' | position='{row.get('position', '')}'")
+            print(f"    project_overview='{str(row.get('project_overview', ''))[:50]}...'")
+        print(f"[DEBUG] Available columns: {list(df.columns)}")
+
+    # Get engineer name and primary field
+    try:
+        engineer_name = df['person_name'].mode()[0]
+    except (KeyError, IndexError):
+        engineer_name = "Unknown"
+
+    try:
+        df['clean_field'] = df['job_field'].astype(str).apply(lambda x: x.split()[0])
+        primary_field = df['clean_field'].mode()[0]
+    except (KeyError, IndexError):
+        primary_field = "토목"
+
+    # Apply filters to categorize projects
+    relevant_projects = []
+    other_projects = []
+    applied_rules_display = []
+
+    for idx, row in df.iterrows():
+        row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
+        match_result = _check_project_matches_criteria(row_dict, filter_criteria)
+
+        if match_result["is_relevant"]:
+            relevant_projects.append({
+                "용역명": row.get("project_name", ""),
+                "발주기관": row.get("client", ""),
+                "공사종류": row.get("project_type", ""),
+                "직무분야": row.get("job_field", ""),
+                "참여기간": f"{row.get('participation_period_start', '')} ~ {row.get('participation_period_end', '')}",
+                "인정일수": f"{row.get('recognized_days', '')}일",
+                "담당업무": row.get("assigned_task", "") or row.get("position", ""),
+                "적용규칙": ", ".join(match_result["matched_rules"])
+            })
+            applied_rules_display.extend(match_result["matched_rules"])
+        else:
+            other_projects.append({
+                "용역명": row.get("project_name", ""),
+                "발주기관": row.get("client", ""),
+                "공사종류": row.get("project_type", ""),
+                "직무분야": row.get("job_field", ""),
+                "참여기간": f"{row.get('participation_period_start', '')} ~ {row.get('participation_period_end', '')}",
+                "인정일수": f"{row.get('recognized_days', '')}일",
+                "담당업무": row.get("assigned_task", "") or row.get("position", "")
+            })
+
+    # Build applied rules description for display
+    applied_rules_summary = list(set(applied_rules_display))
+
+    return {
+        "career_history": {
+            "header": {
+                "division": "책임건설사업관리기술인",
+                "name": engineer_name,
+                "field": primary_field,
+                "filter_conditions": filter_criteria,
+                "applied_rules": applied_rules_summary,
+                "summary": {
+                    "relevant_count": len(relevant_projects),
+                    "other_count": len(other_projects),
+                    "total_count": len(relevant_projects) + len(other_projects)
+                }
+            },
+            "relevant": relevant_projects,
+            "other": other_projects
+        },
+        "data_breakdown": get_data_breakdown(step2_data)
+    }
+
+
+def _extract_filter_criteria(checked_rules: set) -> Dict[str, Any]:
+    """
+    Extract filtering criteria from checked rule IDs.
+
+    Mapping from Step 1 to filtering:
+    1. 기간 -> 인정일/참여일 selection (informational)
+    3. 공사종류 -> Main category filter
+    3.1. 세부공종 -> Detail category filter (AND with 공종)
+    4. 담당업무 -> Role filter
+    5. 직무분야 -> Job field filter
+
+    상주 직무분야1:
+    - 평가 방법: always select
+    - 직무분야: filter
+    - 담당업무: filter
+
+    상주 직무분야2:
+    - 직무분야로 평가: always use
+    - 직무분야: filter
+    - 담당업무: filter
+    - 담당업무 빈칸도 적용: special handling
+
+    Returns dict with filter criteria.
+    """
+    criteria = {
+        "date_type": None,
+        "client_types": [],
+        "client_filter": None,
+        "construction_types": [],
+        "detail_types": [],
+        "roles": [],
+        "job_fields": [],
+        "specialty_fields": [],
+        "include_blank_duty": False,  # 담당업무 빈칸도 적용
+        "include_blank_field": False,  # 공종 빈칸도 적용
+    }
+
+    # Map rules to criteria
+    for rule in CHECKBOX_RULES:
+        rule_id = rule.get("id", "")
+        if rule_id not in checked_rules:
+            continue
+
+        category = rule.get("category", "")
+        group = rule.get("group", "")
+        logic = rule.get("logic", {})
+        keywords = logic.get("keywords", [])
+        label = rule.get("label", "")
+
+        # 1. Date type selection (기간) - informational only
+        if rule_id == "date.use_participation":
+            criteria["date_type"] = "participation"
+        elif rule_id == "date.use_recognition":
+            criteria["date_type"] = "recognition"
+
+        # 3. Construction type (공종) - from 상주 해당분야
+        if "공종" in group and "세부" not in group and "상주 해당분야" in category:
+            criteria["construction_types"].extend(keywords)
+
+        # 3.1. Detail construction type (세부공종)
+        if "세부공종" in group:
+            criteria["detail_types"].extend(keywords)
+
+        # 4. Roles (담당업무) - from any category
+        if "담당업무" in group:
+            criteria["roles"].extend(keywords)
+
+        # 5. Job fields (직무분야) - from 상주 직무분야1 or 상주 직무분야2
+        if "직무분야" in category:
+            if "직무분야" in group or "직무" in group:
+                criteria["job_fields"].extend(keywords)
+            # Also check 담당업무 in 직무분야 categories
+            if "담당업무" in group:
+                criteria["roles"].extend(keywords)
+
+        # 6. Specialty fields (기술지원 전문분야)
+        if "기술지원" in category and "공종" in group:
+            criteria["specialty_fields"].extend(keywords)
+
+        # Special handling: 담당업무 빈칸도 적용
+        if "담당업무 빈칸도 적용" in label:
+            criteria["include_blank_duty"] = True
+
+        # Special handling: 공종 빈칸도 적용
+        if "공종 빈칸도 적용" in label:
+            criteria["include_blank_field"] = True
+
+    # Remove duplicates
+    for key in ["client_types", "construction_types", "detail_types", "roles", "job_fields", "specialty_fields"]:
+        criteria[key] = list(set(criteria[key]))
+
+    return criteria
+
+
+def _check_project_matches_criteria(
+    project: Dict[str, Any],
+    criteria: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Check if a project matches the filter criteria using AND logic.
+
+    Mapping Logic (ALL selected criteria must match):
+    1. 기간 -> 인정일/참여일 (informational only, doesn't filter)
+    3. 공사종류 -> Must match if selected
+    3.1. 세부공종 -> Must match if selected (AND with 공사종류)
+    4. 담당업무 -> Must match if selected
+    5. 직무분야 -> Must match if selected
+
+    Returns:
+        {"is_relevant": bool, "matched_rules": list of matched rule descriptions}
+    """
+    matched_rules = []
+
+    # Helper function for keyword matching
+    def matches_keywords(value: str, keywords: List[str]) -> bool:
+        if not value or not keywords:
+            return False
+        value_lower = str(value).lower()
+        return any(kw.lower() in value_lower for kw in keywords)
+
+    def get_matched_keyword(value: str, keywords: List[str]) -> str:
+        if not value or not keywords:
+            return ""
+        value_lower = str(value).lower()
+        for kw in keywords:
+            if kw.lower() in value_lower:
+                return kw
+        return ""
+
+    # Track which criteria need to be checked and their results
+    criteria_checks = {}
+
+    # Extract project fields - check multiple possible field names
+    project_type = str(project.get("project_type", "") or "")
+    project_name = str(project.get("project_name", "") or "")
+    project_overview = str(project.get("project_overview", "") or "")
+    assigned_task = str(project.get("assigned_task", "") or "")
+    position = str(project.get("position", "") or "")
+    job_field = str(project.get("job_field", "") or "")
+    specialty = str(project.get("specialty_field", "") or "")
+
+    # Combine all searchable text for construction type matching
+    all_text = f"{project_type} {project_name} {project_overview}".lower()
+
+    # Fallback for job_field - try to infer from specialty or use default
+    if not job_field.strip():
+        if specialty:
+            for kw in ["토목", "건축", "기계", "조경", "안전"]:
+                if kw in specialty:
+                    job_field = kw
+                    break
+        # If still empty and we have other civil engineering indicators, assume 토목
+        if not job_field.strip():
+            civil_keywords = ["도로", "교량", "터널", "하천", "상수", "하수", "철도", "단지", "항만"]
+            if any(kw in all_text for kw in civil_keywords):
+                job_field = "토목"
+
+    # 3. Check construction type (공사종류) - REQUIRED if selected
+    # Search in: project_type, project_name, project_overview
+    if criteria.get("construction_types"):
+        matched = matches_keywords(project_type, criteria["construction_types"]) or \
+                  matches_keywords(project_name, criteria["construction_types"]) or \
+                  matches_keywords(project_overview, criteria["construction_types"])
+        criteria_checks["construction_type"] = matched
+        if matched:
+            matched_kw = get_matched_keyword(project_type, criteria["construction_types"]) or \
+                         get_matched_keyword(project_name, criteria["construction_types"]) or \
+                         get_matched_keyword(project_overview, criteria["construction_types"])
+            matched_rules.append(f"공종: {matched_kw}")
+
+    # 3.1. Check detail types (세부공종) - REQUIRED if selected (AND with 공종)
+    # Search in: project_type, project_name, project_overview
+    if criteria.get("detail_types"):
+        matched = matches_keywords(project_type, criteria["detail_types"]) or \
+                  matches_keywords(project_name, criteria["detail_types"]) or \
+                  matches_keywords(project_overview, criteria["detail_types"])
+        criteria_checks["detail_type"] = matched
+        if matched:
+            matched_kw = get_matched_keyword(project_type, criteria["detail_types"]) or \
+                         get_matched_keyword(project_name, criteria["detail_types"]) or \
+                         get_matched_keyword(project_overview, criteria["detail_types"])
+            matched_rules.append(f"세부공종: {matched_kw}")
+
+    # 4. Check roles (담당업무) - REQUIRED if selected
+    # Search in: assigned_task, position, and also project_overview (sometimes role is embedded there)
+    if criteria.get("roles"):
+        # Check if 담당업무 빈칸도 적용 is enabled
+        include_blank = criteria.get("include_blank_duty", False)
+
+        if include_blank and not assigned_task.strip() and not position.strip():
+            # Empty task is allowed
+            criteria_checks["role"] = True
+            matched_rules.append("담당업무: (빈칸 허용)")
+        else:
+            matched = matches_keywords(assigned_task, criteria["roles"]) or \
+                      matches_keywords(position, criteria["roles"]) or \
+                      matches_keywords(project_overview, criteria["roles"])
+            criteria_checks["role"] = matched
+            if matched:
+                matched_kw = get_matched_keyword(assigned_task, criteria["roles"]) or \
+                             get_matched_keyword(position, criteria["roles"]) or \
+                             get_matched_keyword(project_overview, criteria["roles"])
+                matched_rules.append(f"담당업무: {matched_kw}")
+
+    # 5. Check job fields (직무분야) - REQUIRED if selected
+    if criteria.get("job_fields"):
+        matched = matches_keywords(job_field, criteria["job_fields"])
+        criteria_checks["job_field"] = matched
+        if matched:
+            matched_kw = get_matched_keyword(job_field, criteria["job_fields"])
+            matched_rules.append(f"직무분야: {matched_kw}")
+
+    # 6. Check specialty fields (전문분야) - REQUIRED if selected
+    if criteria.get("specialty_fields"):
+        matched = matches_keywords(specialty, criteria["specialty_fields"])
+        criteria_checks["specialty"] = matched
+        if matched:
+            matched_kw = get_matched_keyword(specialty, criteria["specialty_fields"])
+            matched_rules.append(f"전문분야: {matched_kw}")
+
+    # Determine if project is relevant using AND logic
+    # All selected criteria must match
+    if not criteria_checks:
+        # No criteria selected, nothing is relevant
+        is_relevant = False
+    else:
+        # ALL criteria must be True (AND logic)
+        is_relevant = all(criteria_checks.values())
+
+    return {
+        "is_relevant": is_relevant,
+        "matched_rules": matched_rules if is_relevant else []
+    }
+
+
+def _build_report_from_filtered(
+    step2_data: List[Dict[str, Any]],
+    relevant: List[Dict],
+    other: List[Dict],
+    applied_rules: List[str]
+) -> Dict[str, Any]:
+    """Build report structure from filtered data."""
+    df = pd.DataFrame(step2_data) if step2_data else pd.DataFrame()
+
+    try:
+        engineer_name = df['person_name'].mode()[0] if not df.empty else "Unknown"
+    except (KeyError, IndexError):
+        engineer_name = "Unknown"
+
+    try:
+        primary_field = df['job_field'].mode()[0] if not df.empty else "토목"
+    except (KeyError, IndexError):
+        primary_field = "토목"
+
+    return {
+        "career_history": {
+            "header": {
+                "division": "책임건설사업관리기술인",
+                "name": engineer_name,
+                "field": primary_field,
+                "applied_rules": applied_rules,
+                "summary": {
+                    "relevant_count": len(relevant),
+                    "other_count": len(other),
+                    "total_count": len(relevant) + len(other)
+                }
+            },
+            "relevant": relevant,
+            "other": other
+        }
+    }
 
 
 def get_final_report_json(step2_data: List[Dict[str, Any]]) -> Dict[str, Any]:

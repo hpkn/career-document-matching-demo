@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import uuid
 from config import PDF_DIR, STEP1_INDEX_DIR
-from ingest import ingest_step1_multiple, get_final_report_json, main_extractor, clear_pdfs, clear_index
+from ingest import ingest_step1_multiple, get_final_report_json, get_final_report_with_llm, main_extractor, clear_pdfs, clear_index
 from rag import get_step1_data
 from report_utils import get_form_layout
 from semantic_normalizer import normalize_project
@@ -168,38 +168,155 @@ if st.session_state.step == 2:
 # --- STEP 3 ---
 elif st.session_state.step == 3:
     st.header("Step 3: 최종 평가 리포트 (사업수행능력평가)")
-    
-    report = get_final_report_json(st.session_state.step2_records)
+
+    # Use LLM-based report generation with Step 1 rules filtering
+    step1_rules_raw = st.session_state.step1_rules
+    step2_records = st.session_state.step2_records or []
+
+    # Convert step1_rules to dict if it's a pandas Series or other type
+    if step1_rules_raw is None:
+        step1_rules = {}
+    elif hasattr(step1_rules_raw, 'to_dict'):
+        step1_rules = step1_rules_raw.to_dict()
+    elif isinstance(step1_rules_raw, dict):
+        step1_rules = step1_rules_raw
+    else:
+        step1_rules = {}
+
+    # Convert CareerEntry objects to dicts if needed
+    step2_data = []
+    for record in step2_records:
+        if hasattr(record, 'to_dict'):
+            step2_data.append(record.to_dict())
+        elif isinstance(record, dict):
+            step2_data.append(record)
+
+    # Use LLM function if we have step1 rules with any True values, otherwise fallback to default
+    has_checked_rules = bool(step1_rules) and any(v for v in step1_rules.values() if v is True)
+
+    if has_checked_rules:
+        with st.spinner("LLM으로 평가 리포트 생성 중..."):
+            report = get_final_report_with_llm(step1_rules, step2_data)
+    else:
+        report = get_final_report_json(step2_data)
     
     if report:
         career = report.get('career_history', {})
         h = career.get('header', {})
-        
+
         st.subheader(f"📋 {h.get('division', '평가 결과')} | {h.get('name', '')}")
-        
-        # Top Level Metrics
+
+        # Top Level Metrics (removed 환산 경력 and 종합 평점)
+        summary = h.get('summary', {})
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("성명", h.get('name', '-'))
         c2.metric("주 직무분야", h.get('field', '-'))
-        c3.metric("환산 경력", h.get('total_career', '-'))
-        c4.metric("종합 평점", h.get('score', '-'))
-        
-        # Detailed Score Breakdown
-        details = h.get('details', {})
-        st.info(f"**점수 상세:** 해당분야 경력 {details.get('exp_score', '-')} + 직무분야 실적 {details.get('job_score', '-')}")
-        
+        c3.metric("해당분야 건수", summary.get('relevant_count', 0))
+        c4.metric("기타 건수", summary.get('other_count', 0))
+
         st.divider()
-        
+
+        # Display Applied Filter Conditions
+        st.markdown("### 적용된 필터 조건")
+
+        filter_conditions = h.get('filter_conditions', {})
+        applied_rules = h.get('applied_rules', [])
+
+        if filter_conditions or applied_rules:
+            # Show filter conditions in a structured way
+            filter_cols = st.columns(3)
+
+            with filter_cols[0]:
+                if filter_conditions.get('date_type'):
+                    date_label = "참여일" if filter_conditions['date_type'] == 'participation' else "인정일"
+                    st.markdown(f"**기간 기준:** {date_label}")
+
+                if filter_conditions.get('client_filter'):
+                    client_label = "제2조6항 (공공)" if filter_conditions['client_filter'] == 'public' else "민간"
+                    st.markdown(f"**발주처:** {client_label}")
+
+            with filter_cols[1]:
+                if filter_conditions.get('construction_types'):
+                    st.markdown(f"**공종:** {', '.join(filter_conditions['construction_types'])}")
+
+                if filter_conditions.get('detail_types'):
+                    st.markdown(f"**세부공종:** {', '.join(filter_conditions['detail_types'])}")
+
+            with filter_cols[2]:
+                if filter_conditions.get('job_fields'):
+                    st.markdown(f"**직무분야:** {', '.join(filter_conditions['job_fields'])}")
+
+                if filter_conditions.get('roles'):
+                    roles_display = ', '.join(filter_conditions['roles'][:5])
+                    if len(filter_conditions.get('roles', [])) > 5:
+                        roles_display += '...'
+                    if filter_conditions.get('include_blank_duty'):
+                        roles_display += " (빈칸 허용)"
+                    st.markdown(f"**담당업무:** {roles_display}")
+
+            # Show applied rules summary
+            if applied_rules:
+                with st.expander("적용된 규칙 상세 보기", expanded=False):
+                    for rule in applied_rules[:20]:  # Limit to 20 rules
+                        st.markdown(f"- {rule}")
+                    if len(applied_rules) > 20:
+                        st.caption(f"... 외 {len(applied_rules) - 20}개")
+        else:
+            st.info("필터 조건이 적용되지 않았습니다. 모든 프로젝트가 '기타'로 분류됩니다.")
+
+        # Data Breakdown Section
+        breakdown = report.get('data_breakdown', {})
+        if breakdown:
+            with st.expander("📊 데이터 분석 (Step 2 원본 데이터)", expanded=False):
+                st.caption(f"총 {breakdown.get('total_records', 0)}건의 경력 데이터")
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.markdown("**공종 분포:**")
+                    pt_data = breakdown.get('project_type', {})
+                    if pt_data:
+                        for val, count in sorted(pt_data.items(), key=lambda x: -x[1])[:10]:
+                            st.caption(f"• {val}: {count}건")
+                        if len(pt_data) > 10:
+                            st.caption(f"  ... 외 {len(pt_data) - 10}개")
+                    else:
+                        st.caption("데이터 없음")
+
+                with col2:
+                    st.markdown("**담당업무 분포:**")
+                    at_data = breakdown.get('assigned_task', {})
+                    if at_data:
+                        for val, count in sorted(at_data.items(), key=lambda x: -x[1])[:10]:
+                            st.caption(f"• {val}: {count}건")
+                        if len(at_data) > 10:
+                            st.caption(f"  ... 외 {len(at_data) - 10}개")
+                    else:
+                        st.caption("데이터 없음")
+
+                with col3:
+                    st.markdown("**직무분야 분포:**")
+                    jf_data = breakdown.get('job_field', {})
+                    if jf_data:
+                        for val, count in sorted(jf_data.items(), key=lambda x: -x[1])[:10]:
+                            st.caption(f"• {val}: {count}건")
+                        if len(jf_data) > 10:
+                            st.caption(f"  ... 외 {len(jf_data) - 10}개")
+                    else:
+                        st.caption("데이터 없음")
+
+        st.divider()
+
         # Project Tables
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("### ✅ 해당분야 (100%)")
+            st.markdown(f"### ✅ 해당분야 ({summary.get('relevant_count', 0)}건)")
             if career.get('relevant'):
                 st.dataframe(pd.DataFrame(career['relevant']), hide_index=True, use_container_width=True)
             else:
                 st.caption("실적 없음")
         with c2:
-            st.markdown("### ⚪ 기타 (60%)")
+            st.markdown(f"### ⚪ 기타 ({summary.get('other_count', 0)}건)")
             if career.get('other'):
                 st.dataframe(pd.DataFrame(career['other']), hide_index=True, use_container_width=True)
             else:
