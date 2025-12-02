@@ -17,15 +17,19 @@ if 'step' not in st.session_state: st.session_state.step = 2
 if 'step2_records' not in st.session_state: st.session_state.step2_records = []
 if 'step1_norm_data' not in st.session_state: st.session_state.step1_norm_data = None
 if 'step1_rules' not in st.session_state: st.session_state.step1_rules = None
+if 'step3_report' not in st.session_state: st.session_state.step3_report = None
 
 def prev_step():
     st.session_state.step -= 1
-    
+    # Clear Step 3 cache when going back so it regenerates with new data
+    st.session_state.step3_report = None
+
 def reset_app():
     st.session_state.step = 1
     st.session_state.step2_records = []
     st.session_state.step1_norm_data = None
     st.session_state.step1_rules = None
+    st.session_state.step3_report = None
 
 # --- STEP 1: Checkbox Guide (Native Text) ---
 # --- STEP 1: Checkbox Guide ---
@@ -185,36 +189,40 @@ if st.session_state.step == 2:
 elif st.session_state.step == 3:
     st.header("Step 3: 최종 평가 리포트 (사업수행능력평가)")
 
-    # Use LLM-based report generation with Step 1 rules filtering
-    step1_rules_raw = st.session_state.step1_rules
-    step2_records = st.session_state.step2_records or []
+    # Use cached report if available (avoids re-running LLM on every interaction)
+    if st.session_state.step3_report is None:
+        # Use LLM-based report generation with Step 1 rules filtering
+        step1_rules_raw = st.session_state.step1_rules
+        step2_records = st.session_state.step2_records or []
 
-    # Convert step1_rules to dict if it's a pandas Series or other type
-    if step1_rules_raw is None:
-        step1_rules = {}
-    elif hasattr(step1_rules_raw, 'to_dict'):
-        step1_rules = step1_rules_raw.to_dict()
-    elif isinstance(step1_rules_raw, dict):
-        step1_rules = step1_rules_raw
-    else:
-        step1_rules = {}
+        # Convert step1_rules to dict if it's a pandas Series or other type
+        if step1_rules_raw is None:
+            step1_rules = {}
+        elif hasattr(step1_rules_raw, 'to_dict'):
+            step1_rules = step1_rules_raw.to_dict()
+        elif isinstance(step1_rules_raw, dict):
+            step1_rules = step1_rules_raw
+        else:
+            step1_rules = {}
 
-    # Convert CareerEntry objects to dicts if needed
-    step2_data = []
-    for record in step2_records:
-        if hasattr(record, 'to_dict'):
-            step2_data.append(record.to_dict())
-        elif isinstance(record, dict):
-            step2_data.append(record)
+        # Convert CareerEntry objects to dicts if needed
+        step2_data = []
+        for record in step2_records:
+            if hasattr(record, 'to_dict'):
+                step2_data.append(record.to_dict())
+            elif isinstance(record, dict):
+                step2_data.append(record)
 
-    # Use LLM function if we have step1 rules with any True values, otherwise fallback to default
-    has_checked_rules = bool(step1_rules) and any(v for v in step1_rules.values() if v is True)
+        # Use LLM function if we have step1 rules with any True values, otherwise fallback to default
+        has_checked_rules = bool(step1_rules) and any(v for v in step1_rules.values() if v is True)
 
-    if has_checked_rules:
-        with st.spinner("LLM으로 평가 리포트 생성 중..."):
-            report = get_final_report_with_llm(step1_rules, step2_data)
-    else:
-        report = get_final_report_json(step2_data)
+        if has_checked_rules:
+            with st.spinner("LLM으로 평가 리포트 생성 중..."):
+                st.session_state.step3_report = get_final_report_with_llm(step1_rules, step2_data)
+        else:
+            st.session_state.step3_report = get_final_report_json(step2_data)
+
+    report = st.session_state.step3_report
     
     if report:
         career = report.get('career_history', {})

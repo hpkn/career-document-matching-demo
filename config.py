@@ -70,11 +70,17 @@ OLLAMA_MODEL_STEP3 = os.getenv("OLLAMA_MODEL_STEP3", "gemma3:4b")
 # Set to "true" for fastest processing, "false" to use LLM
 STEP3_SKIP_LLM = os.getenv("STEP3_SKIP_LLM", "true").lower() == "true"
 
+# Number of parallel workers for LLM batch processing
+# Higher = faster but more load on Ollama server
+# Set to 1 for sequential processing (safest)
+STEP3_LLM_WORKERS = int(os.getenv("STEP3_LLM_WORKERS", "4"))
+
 # You can override with:
 # export OLLAMA_MODEL="gemma:4b"
 # export OLLAMA_MODEL="llama3:13b"
 # export OLLAMA_MODEL_STEP3="llama3:8b"
 # export STEP3_SKIP_LLM=true
+# export STEP3_LLM_WORKERS=4
 
 
 # ---------------------------------------------------------

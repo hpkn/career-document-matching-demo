@@ -1229,13 +1229,16 @@ def _classify_projects_with_llm(
 ) -> List[Dict[str, Any]]:
     """
     Use LLM to classify projects with detailed match reasons.
-    Processes in batches of 50 to avoid timeouts.
+    Processes in batches with parallel execution for speed.
 
     Returns list of projects with added 'is_relevant' and 'match_reason' fields.
     """
-    from config import STEP3_SKIP_LLM
+    from config import STEP3_SKIP_LLM, STEP3_LLM_WORKERS
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import copy
 
-    BATCH_SIZE = 20  # Process 20 projects at a time for faster response
+    BATCH_SIZE = 20  # Process 20 projects at a time
+    MAX_WORKERS = STEP3_LLM_WORKERS  # Number of parallel LLM requests
 
     if not projects:
         return []
@@ -1257,20 +1260,42 @@ def _classify_projects_with_llm(
         print(f"[Step3] Using keyword matching (STEP3_SKIP_LLM=true)")
         return _classify_projects_with_keywords(projects, filter_criteria)
 
-    # Process in batches
+    # Prepare batches
+    batches = []
     total_batches = (len(projects) + BATCH_SIZE - 1) // BATCH_SIZE
-    print(f"[Step3 LLM] Processing {len(projects)} projects in {total_batches} batches of {BATCH_SIZE}")
-
-    classified_projects = []
     for batch_num in range(total_batches):
         start_idx = batch_num * BATCH_SIZE
         end_idx = min(start_idx + BATCH_SIZE, len(projects))
-        batch = projects[start_idx:end_idx]
+        # Deep copy to avoid mutation issues in parallel execution
+        batch = [copy.deepcopy(p) for p in projects[start_idx:end_idx]]
+        batches.append((batch_num, start_idx, batch))
 
-        print(f"[Step3 LLM] Processing batch {batch_num + 1}/{total_batches} ({len(batch)} projects)")
+    print(f"[Step3 LLM] Processing {len(projects)} projects in {total_batches} batches (parallel workers: {MAX_WORKERS})")
 
-        classified_batch = _classify_batch_with_llm(batch, start_idx, filter_criteria)
-        classified_projects.extend(classified_batch)
+    # Process batches in parallel
+    results = {}
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_batch = {
+            executor.submit(_classify_batch_with_llm, batch, start_idx, filter_criteria): batch_num
+            for batch_num, start_idx, batch in batches
+        }
+
+        for future in as_completed(future_to_batch):
+            batch_num = future_to_batch[future]
+            try:
+                classified_batch = future.result()
+                results[batch_num] = classified_batch
+                print(f"[Step3 LLM] Batch {batch_num + 1}/{total_batches} complete")
+            except Exception as e:
+                print(f"[Step3 LLM] Batch {batch_num + 1} failed: {e}, using keyword fallback")
+                # Fallback to keyword matching for failed batch
+                _, start_idx, batch = batches[batch_num]
+                results[batch_num] = _classify_projects_with_keywords(batch, filter_criteria)
+
+    # Reassemble in order
+    classified_projects = []
+    for batch_num in range(total_batches):
+        classified_projects.extend(results.get(batch_num, []))
 
     return classified_projects
 
