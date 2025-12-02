@@ -1076,17 +1076,15 @@ def _classify_projects_with_keywords(
 def _classify_batch_with_llm(
     batch: List[Dict[str, Any]],
     batch_start_idx: int,
-    criteria_text: str,
     filter_criteria: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
     """
-    Classify a single batch of projects with LLM.
+    Classify a single batch of projects with LLM using strict AND logic.
 
     Args:
         batch: List of projects in this batch
         batch_start_idx: The starting index of this batch in the original list
-        criteria_text: Pre-built criteria description for LLM
-        filter_criteria: Original filter criteria for fallback
+        filter_criteria: Filter criteria for classification
 
     Returns:
         The batch with is_relevant and match_reason fields added
@@ -1099,19 +1097,38 @@ def _classify_batch_with_llm(
 
     projects_text = "\n".join(project_lines)
 
-    prompt = f"""분류 조건: {criteria_text}
+    # Extract criteria from filter_criteria
+    construction_types = filter_criteria.get("construction_types", [])
+    roles = filter_criteria.get("roles", [])
+    job_fields = filter_criteria.get("job_fields", [])
 
-프로젝트 (index|사업명|공사종류|담당업무|직무분야):
+    # Build strict criteria check list
+    criteria_check_list = []
+    if construction_types:
+        criteria_check_list.append(f"1. 공종: 사업명 또는 공사종류에 다음 중 하나가 정확히 포함되어야 함: {', '.join(construction_types)}")
+    if roles:
+        criteria_check_list.append(f"2. 담당업무: 담당업무 필드에 다음 중 하나가 정확히 포함되어야 함: {', '.join(roles)}")
+    if job_fields:
+        criteria_check_list.append(f"3. 직무분야: 직무분야가 다음 중 하나와 일치해야 함: {', '.join(job_fields)} (빈칸이면 '토목'으로 간주)")
+
+    criteria_rules = "\n".join(criteria_check_list)
+
+    prompt = f"""**엄격한 분류 규칙 (AND 조건)**
+
+{criteria_rules}
+
+**중요**: 위의 모든 조건이 충족되어야만 r=1입니다. 하나라도 불충족시 r=0.
+
+프로젝트 데이터 (index|사업명|공사종류|담당업무|직무분야):
 {projects_text}
 
-각 프로젝트 분류:
-- 공종: 사업명/공사종류에서 조건 키워드 포함시 충족
-- 담당업무: 담당업무 필드에서 조건 키워드 포함시 충족
-- 직무분야: 직무분야가 조건과 일치시 충족 (빈칸이면 토목으로 간주)
-- 모든 조건 충족시 1, 아니면 0
+각 프로젝트를 위 조건으로 엄격히 검사하세요:
+- 키워드가 정확히 포함되어 있는지 확인 (유사어 불가)
+- 모든 조건이 충족되면 r=1, 하나라도 불충족시 r=0
+- reason에 충족된 조건만 기재, 불충족시 어떤 조건이 불충족인지 기재
 
-JSON 출력 (reason에 충족된 조건 기재):
-[{{"i":0,"r":1,"reason":"공종: 상수도, 담당업무: 설계"}},{{"i":1,"r":0,"reason":"담당업무 불일치"}}]"""
+JSON 배열만 출력:
+[{{"i":0,"r":1,"reason":"공종: 상수도, 담당업무: 설계, 직무분야: 토목"}},{{"i":1,"r":0,"reason":"담당업무 불충족"}}]"""
 
     response = _call_ollama_for_classification(prompt)
 
@@ -1175,17 +1192,6 @@ def _classify_projects_with_llm(
         print(f"[Step3] Using keyword matching (STEP3_SKIP_LLM=true)")
         return _classify_projects_with_keywords(projects, filter_criteria)
 
-    # Build criteria description for LLM (shared across batches)
-    criteria_parts = []
-    if construction_types:
-        criteria_parts.append(f"공종: {', '.join(construction_types)}")
-    if roles:
-        criteria_parts.append(f"담당업무: {', '.join(roles)}")
-    if job_fields:
-        criteria_parts.append(f"직무분야: {', '.join(job_fields)}")
-
-    criteria_text = " | ".join(criteria_parts)
-
     # Process in batches
     total_batches = (len(projects) + BATCH_SIZE - 1) // BATCH_SIZE
     print(f"[Step3 LLM] Processing {len(projects)} projects in {total_batches} batches of {BATCH_SIZE}")
@@ -1198,7 +1204,7 @@ def _classify_projects_with_llm(
 
         print(f"[Step3 LLM] Processing batch {batch_num + 1}/{total_batches} ({len(batch)} projects)")
 
-        classified_batch = _classify_batch_with_llm(batch, start_idx, criteria_text, filter_criteria)
+        classified_batch = _classify_batch_with_llm(batch, start_idx, filter_criteria)
         classified_projects.extend(classified_batch)
 
     return classified_projects
