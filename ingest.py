@@ -1159,6 +1159,67 @@ JSON만 출력 (설명 금지):
         # Fallback to keyword-based matching for this batch
         batch = _classify_projects_with_keywords(batch, filter_criteria)
 
+    # POST-VALIDATION: Override LLM results with strict keyword check
+    # This ensures LLM doesn't mark non-matching projects as relevant
+    for p in batch:
+        if p.get('is_relevant', False):
+            # Verify with keyword matching
+            text = f"{p.get('project_name', '')} {p.get('project_type', '')}".lower()
+            task = f"{p.get('assigned_task', '')}".lower()
+            job = p.get('job_field', '').lower() or "토목"
+
+            # Check construction_types - MUST contain keyword
+            ct_match = False
+            matched_ct = ""
+            if construction_types:
+                for ct in construction_types:
+                    if ct.lower() in text:
+                        ct_match = True
+                        matched_ct = ct
+                        break
+            else:
+                ct_match = True  # No filter = pass
+
+            # Check roles - MUST contain keyword
+            role_match = False
+            matched_role = ""
+            if roles:
+                for r in roles:
+                    if r.lower() in task:
+                        role_match = True
+                        matched_role = r
+                        break
+            else:
+                role_match = True  # No filter = pass
+
+            # Check job_fields - MUST contain keyword
+            jf_match = False
+            matched_jf = ""
+            if job_fields:
+                for jf in job_fields:
+                    if jf.lower() in job:
+                        jf_match = True
+                        matched_jf = jf
+                        break
+            else:
+                jf_match = True  # No filter = pass
+
+            # All must match (AND logic)
+            if ct_match and role_match and jf_match:
+                # Build accurate reason
+                reasons = []
+                if matched_ct:
+                    reasons.append(f"공종:{matched_ct}")
+                if matched_role:
+                    reasons.append(f"담당업무:{matched_role}")
+                if matched_jf:
+                    reasons.append(f"직무분야:{matched_jf}")
+                p['match_reason'] = ",".join(reasons) if reasons else p.get('match_reason', '')
+            else:
+                # LLM was wrong - override to not relevant
+                p['is_relevant'] = False
+                p['match_reason'] = ""
+
     return batch
 
 
