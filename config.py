@@ -55,7 +55,8 @@ TESS_LANG = "kor+eng"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # Recommended model for Korean structured extraction
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b-cloud")
+# gpt-oss:120b-cloud
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:27b")
 
 # You can override with:
 # export OLLAMA_MODEL="gemma:4b"
