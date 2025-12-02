@@ -1102,33 +1102,37 @@ def _classify_batch_with_llm(
     roles = filter_criteria.get("roles", [])
     job_fields = filter_criteria.get("job_fields", [])
 
-    # Build strict criteria check list
-    criteria_check_list = []
-    if construction_types:
-        criteria_check_list.append(f"1. 공종: 사업명 또는 공사종류에 다음 중 하나가 정확히 포함되어야 함: {', '.join(construction_types)}")
-    if roles:
-        criteria_check_list.append(f"2. 담당업무: 담당업무 필드에 다음 중 하나가 정확히 포함되어야 함: {', '.join(roles)}")
-    if job_fields:
-        criteria_check_list.append(f"3. 직무분야: 직무분야가 다음 중 하나와 일치해야 함: {', '.join(job_fields)} (빈칸이면 '토목'으로 간주)")
+    # Build explicit keyword lists for strict matching
+    ct_keywords = ', '.join(f'"{ct}"' for ct in construction_types) if construction_types else "없음"
+    role_keywords = ', '.join(f'"{r}"' for r in roles) if roles else "없음"
+    jf_keywords = ', '.join(f'"{jf}"' for jf in job_fields) if job_fields else "없음"
 
-    criteria_rules = "\n".join(criteria_check_list)
+    prompt = f"""**키워드 매칭 분류 (AND 조건 - 모든 조건 필수)**
 
-    prompt = f"""**엄격한 분류 규칙 (AND 조건)**
+검색할 키워드:
+- 공종 키워드: [{ct_keywords}]
+- 담당업무 키워드: [{role_keywords}]
+- 직무분야 키워드: [{jf_keywords}]
 
-{criteria_rules}
+**분류 규칙:**
+1. 공종: "사업명" 또는 "공사종류" 열에 공종 키워드 중 하나가 **문자열로 포함**되어야 함
+   - 예: "하수도정비사업"에 "하수도" 포함 → 충족
+   - 예: "국도건설공사"에 "하수도" 미포함 → 불충족
+2. 담당업무: "담당업무" 열에 담당업무 키워드 중 하나가 **문자열로 포함**되어야 함
+3. 직무분야: "직무분야" 열이 직무분야 키워드 중 하나를 **포함**해야 함 (빈칸이면 "토목"으로 간주)
 
-**중요**: 위의 모든 조건이 충족되어야만 r=1입니다. 하나라도 불충족시 r=0.
+**중요**: 세 조건 모두 충족해야 r=1. 하나라도 불충족시 r=0.
 
-프로젝트 데이터 (index|사업명|공사종류|담당업무|직무분야):
+프로젝트 (i|사업명|공사종류|담당업무|직무분야):
 {projects_text}
 
-각 프로젝트를 위 조건으로 엄격히 검사하세요:
-- 키워드가 정확히 포함되어 있는지 확인 (유사어 불가)
-- 모든 조건이 충족되면 r=1, 하나라도 불충족시 r=0
-- reason에 충족된 조건만 기재, 불충족시 어떤 조건이 불충족인지 기재
+각 프로젝트 검사:
+- i=0: 사업명/공사종류에 {ct_keywords} 중 하나 포함? 담당업무에 {role_keywords} 중 하나 포함? 직무분야에 {jf_keywords} 포함?
+- 모두 충족시만 r=1, reason에 매칭된 키워드만 기재
+- 하나라도 불충족시 r=0, reason에 "공종 불충족" 또는 "담당업무 불충족" 등 기재
 
-JSON 배열만 출력:
-[{{"i":0,"r":1,"reason":"공종: 상수도, 담당업무: 설계, 직무분야: 토목"}},{{"i":1,"r":0,"reason":"담당업무 불충족"}}]"""
+JSON만 출력 (설명 금지):
+[{{"i":0,"r":0,"reason":"공종 불충족"}},{{"i":1,"r":1,"reason":"공종:하수도,담당업무:감독,직무분야:토목"}}]"""
 
     response = _call_ollama_for_classification(prompt)
 
