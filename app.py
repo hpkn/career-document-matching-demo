@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import uuid
+import re
 from config import PDF_DIR, STEP1_INDEX_DIR
 from ingest import ingest_step1_multiple, get_final_report_json, get_final_report_with_llm, main_extractor, clear_pdfs, clear_index
 from rag import get_step1_data
@@ -80,13 +81,18 @@ if st.session_state.step == 1:
                     for i, opt in enumerate(options):
                         rule_id = opt.get('rule_id') or opt.get('id')
                         rule_key = f"rule__{rule_id}"
-                        is_checked = rules.get(rule_key, False)
                         widget_key = f"{sec_key}_{q_idx}_{i}_{rule_id}"
 
-                        # Editable checkbox - update session state on change
-                        new_value = cols[i % 4].checkbox(opt['label'], value=is_checked, key=widget_key)
-                        if new_value != is_checked:
-                            st.session_state.step1_rules[rule_key] = new_value
+                        # Get current value - prefer widget state, fallback to rules
+                        if widget_key in st.session_state:
+                            current_value = st.session_state[widget_key]
+                        else:
+                            current_value = rules.get(rule_key, False)
+
+                        # Editable checkbox
+                        new_value = cols[i % 4].checkbox(opt['label'], value=current_value, key=widget_key)
+                        # Always sync to step1_rules
+                        st.session_state.step1_rules[rule_key] = new_value
                     st.markdown("")
             st.markdown("---")
 
@@ -218,16 +224,28 @@ elif st.session_state.step == 3:
 
         # Top Level Metrics (removed 환산 경력 and 종합 평점)
         summary = h.get('summary', {})
-        c1, c2, c3, c4 = st.columns(4)
+
+        # Calculate total 인정일수 for 해당분야
+        relevant_total_days = 0
+        if career.get('relevant'):
+            for proj in career['relevant']:
+                days_str = str(proj.get('인정일수', '0'))
+                # Extract numeric value from string like "365일"
+                match = re.search(r'(\d+)', days_str.replace(',', ''))
+                if match:
+                    relevant_total_days += int(match.group(1))
+
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("성명", h.get('name', '-'))
         c2.metric("주 직무분야", h.get('field', '-'))
         c3.metric("해당분야 건수", summary.get('relevant_count', 0))
-        c4.metric("기타 건수", summary.get('other_count', 0))
+        c4.metric("경력기간 (인정일)", f"{relevant_total_days:,}일")
+        c5.metric("기타 건수", summary.get('other_count', 0))
 
         st.divider()
 
         # Display Applied Filter Conditions
-        st.markdown("### 적용된 필터 조건")
+        st.markdown("### 경력 인정 기준")
 
         filter_conditions = h.get('filter_conditions', {})
         applied_rules = h.get('applied_rules', [])

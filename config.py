@@ -14,6 +14,10 @@ This file defines:
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 # ---------------------------------------------------------
@@ -54,13 +58,23 @@ TESS_LANG = "kor+eng"
 # When not set, defaults to local llama3
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-# Recommended model for Korean structured extraction
-# gpt-oss:120b-cloud
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:27b")
+# Recommended model for Korean structured extraction (Step 1 & 2)
+# gpt-oss:120b-cloud - Best for complex Korean text understanding
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b-cloud")
+
+# Model for Step 3 classification
+# Use same model as Step 1/2 for consistency, or a faster model for speed
+OLLAMA_MODEL_STEP3 = os.getenv("OLLAMA_MODEL_STEP3", "gemma3:4b")
+
+# Skip LLM for Step 3 and use keyword-only matching (instant, deterministic)
+# Set to "true" for fastest processing, "false" to use LLM
+STEP3_SKIP_LLM = os.getenv("STEP3_SKIP_LLM", "true").lower() == "true"
 
 # You can override with:
 # export OLLAMA_MODEL="gemma:4b"
 # export OLLAMA_MODEL="llama3:13b"
+# export OLLAMA_MODEL_STEP3="llama3:8b"
+# export STEP3_SKIP_LLM=true
 
 
 # ---------------------------------------------------------

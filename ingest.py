@@ -982,20 +982,236 @@ def get_data_breakdown(step2_data: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
     }
 
 
+def _call_ollama_for_classification(prompt: str) -> str:
+    """Call Ollama API for Step 3 classification using faster model."""
+    import requests
+    from config import OLLAMA_BASE_URL, OLLAMA_MODEL_STEP3
+
+    url = f"{OLLAMA_BASE_URL}/api/chat"
+    payload = {
+        "model": OLLAMA_MODEL_STEP3,
+        "messages": [
+            {"role": "system", "content": "You are a Korean construction career classifier. Output ONLY valid JSON."},
+            {"role": "user", "content": prompt}
+        ],
+        "stream": False,
+        "options": {"temperature": 0.0, "num_ctx": 16000},
+    }
+
+    print(f"[Step3 LLM] Calling Ollama ({OLLAMA_MODEL_STEP3}) for classification...")
+    try:
+        resp = requests.post(url, json=payload, timeout=60)  # Reduced to 60 seconds
+        if resp.status_code != 200:
+            print(f"[Step3 LLM] ERROR: Ollama returned status {resp.status_code}")
+            return "{}"
+        return resp.json().get("message", {}).get("content", "")
+    except Exception as e:
+        print(f"[Step3 LLM] ERROR: {e}")
+        return "{}"
+
+
+def _classify_projects_with_keywords(
+    projects: List[Dict[str, Any]],
+    filter_criteria: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """
+    Classify projects using keyword matching only (fast, deterministic).
+
+    Returns list of projects with added 'is_relevant' and 'match_reason' fields.
+    """
+    construction_types = filter_criteria.get("construction_types", [])
+    roles = filter_criteria.get("roles", [])
+    job_fields = filter_criteria.get("job_fields", [])
+    include_blank_duty = filter_criteria.get("include_blank_duty", False)
+
+    for p in projects:
+        p['is_relevant'] = False
+        p['match_reason'] = ""
+
+        text = f"{p.get('project_name', '')} {p.get('project_type', '')} {p.get('project_overview', '')}".lower()
+        task = f"{p.get('assigned_task', '')} {p.get('position', '')}".lower()
+        job = p.get('job_field', '').lower() or "토목"  # Default to 토목 if empty
+
+        matched_reasons = []
+        checks = []
+
+        # Check construction types
+        if construction_types:
+            matched_ct = [ct for ct in construction_types if ct.lower() in text]
+            if matched_ct:
+                checks.append(True)
+                matched_reasons.append(f"공종: {matched_ct[0]}")
+            else:
+                checks.append(False)
+
+        # Check roles
+        if roles:
+            if include_blank_duty and not task.strip():
+                checks.append(True)
+                matched_reasons.append("담당업무: (빈칸 허용)")
+            else:
+                matched_role = [r for r in roles if r.lower() in task]
+                if matched_role:
+                    checks.append(True)
+                    matched_reasons.append(f"담당업무: {matched_role[0]}")
+                else:
+                    checks.append(False)
+
+        # Check job fields
+        if job_fields:
+            matched_jf = [jf for jf in job_fields if jf.lower() in job]
+            if matched_jf:
+                checks.append(True)
+                matched_reasons.append(f"직무분야: {matched_jf[0]}")
+            else:
+                checks.append(False)
+
+        if checks and all(checks):
+            p['is_relevant'] = True
+            p['match_reason'] = ", ".join(matched_reasons)
+
+    return projects
+
+
+def _classify_batch_with_llm(
+    batch: List[Dict[str, Any]],
+    batch_start_idx: int,
+    criteria_text: str,
+    filter_criteria: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """
+    Classify a single batch of projects with LLM.
+
+    Args:
+        batch: List of projects in this batch
+        batch_start_idx: The starting index of this batch in the original list
+        criteria_text: Pre-built criteria description for LLM
+        filter_criteria: Original filter criteria for fallback
+
+    Returns:
+        The batch with is_relevant and match_reason fields added
+    """
+    # Build compact project list for this batch
+    project_lines = []
+    for i, p in enumerate(batch):
+        line = f"{i}|{p.get('project_name', '')[:60]}|{p.get('project_type', '')}|{p.get('assigned_task', '')}|{p.get('job_field', '')}"
+        project_lines.append(line)
+
+    projects_text = "\n".join(project_lines)
+
+    prompt = f"""분류 조건: {criteria_text}
+
+프로젝트 (index|사업명|공사종류|담당업무|직무분야):
+{projects_text}
+
+각 프로젝트 분류:
+- 공종: 사업명/공사종류에서 조건 키워드 포함시 충족
+- 담당업무: 담당업무 필드에서 조건 키워드 포함시 충족
+- 직무분야: 직무분야가 조건과 일치시 충족 (빈칸이면 토목으로 간주)
+- 모든 조건 충족시 1, 아니면 0
+
+JSON 출력 (reason에 충족된 조건 기재):
+[{{"i":0,"r":1,"reason":"공종: 상수도, 담당업무: 설계"}},{{"i":1,"r":0,"reason":"담당업무 불일치"}}]"""
+
+    response = _call_ollama_for_classification(prompt)
+
+    # Parse LLM response
+    try:
+        response = re.sub(r"```json|```", "", response).strip()
+        match = re.search(r'\[.*\]', response, re.DOTALL)
+        if match:
+            response = match.group(0)
+
+        results = json.loads(response)
+
+        # Apply results to batch
+        for r in results:
+            idx = r.get("i", r.get("index", -1))
+            is_rel = r.get("r", r.get("is_relevant", 0))
+            reason = r.get("reason", "")
+            if 0 <= idx < len(batch):
+                batch[idx]['is_relevant'] = bool(is_rel) if isinstance(is_rel, int) else is_rel
+                batch[idx]['match_reason'] = reason
+
+    except Exception as e:
+        print(f"[Step3 LLM] Batch parse error: {e}, using keyword matching for this batch")
+        # Fallback to keyword-based matching for this batch
+        batch = _classify_projects_with_keywords(batch, filter_criteria)
+
+    return batch
+
+
+def _classify_projects_with_llm(
+    projects: List[Dict[str, Any]],
+    filter_criteria: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """
+    Use LLM to classify projects with detailed match reasons.
+    Processes in batches of 50 to avoid timeouts.
+
+    Returns list of projects with added 'is_relevant' and 'match_reason' fields.
+    """
+    from config import STEP3_SKIP_LLM
+
+    BATCH_SIZE = 20  # Process 20 projects at a time for faster response
+
+    if not projects:
+        return []
+
+    # Build criteria lists
+    construction_types = filter_criteria.get("construction_types", [])
+    roles = filter_criteria.get("roles", [])
+    job_fields = filter_criteria.get("job_fields", [])
+
+    if not construction_types and not roles and not job_fields:
+        # No criteria, mark all as 기타
+        for p in projects:
+            p['is_relevant'] = False
+            p['match_reason'] = ""
+        return projects
+
+    # Skip LLM if configured - use fast keyword matching
+    if STEP3_SKIP_LLM:
+        print(f"[Step3] Using keyword matching (STEP3_SKIP_LLM=true)")
+        return _classify_projects_with_keywords(projects, filter_criteria)
+
+    # Build criteria description for LLM (shared across batches)
+    criteria_parts = []
+    if construction_types:
+        criteria_parts.append(f"공종: {', '.join(construction_types)}")
+    if roles:
+        criteria_parts.append(f"담당업무: {', '.join(roles)}")
+    if job_fields:
+        criteria_parts.append(f"직무분야: {', '.join(job_fields)}")
+
+    criteria_text = " | ".join(criteria_parts)
+
+    # Process in batches
+    total_batches = (len(projects) + BATCH_SIZE - 1) // BATCH_SIZE
+    print(f"[Step3 LLM] Processing {len(projects)} projects in {total_batches} batches of {BATCH_SIZE}")
+
+    classified_projects = []
+    for batch_num in range(total_batches):
+        start_idx = batch_num * BATCH_SIZE
+        end_idx = min(start_idx + BATCH_SIZE, len(projects))
+        batch = projects[start_idx:end_idx]
+
+        print(f"[Step3 LLM] Processing batch {batch_num + 1}/{total_batches} ({len(batch)} projects)")
+
+        classified_batch = _classify_batch_with_llm(batch, start_idx, criteria_text, filter_criteria)
+        classified_projects.extend(classified_batch)
+
+    return classified_projects
+
+
 def get_final_report_with_llm(
     step1_rules: Dict[str, bool],
     step2_data: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """
-    Generate Step 3 report by filtering Step 2 data based on Step 1 checked rules.
+    Generate Step 3 report using LLM to filter Step 2 data based on Step 1 checked rules.
 
-    Mapping Logic:
-    1. 기간 -> 인정일/참여일 selection
-    2. 발주처 -> Filter by client type (제2조6항=public, else=others)
-    3. 공사종류 -> Main category filter (도로, 하천, etc.)
-    3.1. 세부공종 -> Detailed category filter
-    4. 담당업무 -> Role/task filter
-    5. 직무분야 -> Job field filter (토목, 건축, 기계, etc.)
+    Uses LLM for semantic matching instead of keyword-only matching for better accuracy.
 
     Args:
         step1_rules: Dict of rule_id -> bool (True = checked/applicable)
@@ -1029,16 +1245,7 @@ def get_final_report_with_llm(
     # Convert to DataFrame for easier processing
     df = pd.DataFrame(step2_data)
 
-    # DEBUG: Print first 3 records to see actual field values
-    print(f"[DEBUG] Total records: {len(df)}")
-    if not df.empty:
-        print(f"[DEBUG] Sample records (first 3):")
-        for i, row in df.head(3).iterrows():
-            print(f"  Record {i}:")
-            print(f"    project_type='{row.get('project_type', '')}' | project_name='{row.get('project_name', '')[:30]}...'")
-            print(f"    job_field='{row.get('job_field', '')}' | assigned_task='{row.get('assigned_task', '')}' | position='{row.get('position', '')}'")
-            print(f"    project_overview='{str(row.get('project_overview', ''))[:50]}...'")
-        print(f"[DEBUG] Available columns: {list(df.columns)}")
+    print(f"[Step3 LLM] Total records to classify: {len(df)}")
 
     # Get engineer name and primary field
     try:
@@ -1052,47 +1259,46 @@ def get_final_report_with_llm(
     except (KeyError, IndexError):
         primary_field = "토목"
 
-    # Apply filters to categorize projects
+    # Convert DataFrame to list of dicts for LLM classification
+    projects_list = df.to_dict('records')
+
+    # Use LLM to classify projects
+    classified_projects = _classify_projects_with_llm(projects_list, filter_criteria)
+
+    # Separate into relevant and other
     relevant_projects = []
     other_projects = []
     applied_rules_display = []
 
-    debug_count = 0
-    for idx, row in df.iterrows():
-        row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
-        match_result = _check_project_matches_criteria(row_dict, filter_criteria)
-
-        # Debug first 5 records
-        if debug_count < 5:
-            print(f"[DEBUG] Record {idx}: is_relevant={match_result['is_relevant']}, criteria_checks={match_result.get('criteria_checks', {})}")
-            print(f"        project_type='{row.get('project_type', '')}', assigned_task='{row.get('assigned_task', '')}', job_field='{row.get('job_field', '')}'")
-            debug_count += 1
-
-        if match_result["is_relevant"]:
+    for proj in classified_projects:
+        if proj.get('is_relevant', False):
             relevant_projects.append({
-                "용역명": row.get("project_name", ""),
-                "발주기관": row.get("client", ""),
-                "공사종류": row.get("project_type", ""),
-                "직무분야": row.get("job_field", ""),
-                "참여기간": f"{row.get('participation_period_start', '')} ~ {row.get('participation_period_end', '')}",
-                "인정일수": f"{row.get('recognized_days', '')}일",
-                "담당업무": row.get("assigned_task", "") or row.get("position", ""),
-                "적용규칙": ", ".join(match_result["matched_rules"])
+                "용역명": proj.get("project_name", ""),
+                "발주기관": proj.get("client", ""),
+                "공사종류": proj.get("project_type", ""),
+                "직무분야": proj.get("job_field", ""),
+                "참여기간": f"{proj.get('participation_period_start', '')} ~ {proj.get('participation_period_end', '')}",
+                "인정일수": f"{proj.get('recognized_days', '')}일",
+                "담당업무": proj.get("assigned_task", "") or proj.get("position", ""),
+                "적용규칙": proj.get("match_reason", "")
             })
-            applied_rules_display.extend(match_result["matched_rules"])
+            if proj.get("match_reason"):
+                applied_rules_display.append(proj.get("match_reason"))
         else:
             other_projects.append({
-                "용역명": row.get("project_name", ""),
-                "발주기관": row.get("client", ""),
-                "공사종류": row.get("project_type", ""),
-                "직무분야": row.get("job_field", ""),
-                "참여기간": f"{row.get('participation_period_start', '')} ~ {row.get('participation_period_end', '')}",
-                "인정일수": f"{row.get('recognized_days', '')}일",
-                "담당업무": row.get("assigned_task", "") or row.get("position", "")
+                "용역명": proj.get("project_name", ""),
+                "발주기관": proj.get("client", ""),
+                "공사종류": proj.get("project_type", ""),
+                "직무분야": proj.get("job_field", ""),
+                "참여기간": f"{proj.get('participation_period_start', '')} ~ {proj.get('participation_period_end', '')}",
+                "인정일수": f"{proj.get('recognized_days', '')}일",
+                "담당업무": proj.get("assigned_task", "") or proj.get("position", "")
             })
 
     # Build applied rules description for display
     applied_rules_summary = list(set(applied_rules_display))
+
+    print(f"[Step3 LLM] Classification complete: {len(relevant_projects)} 해당분야, {len(other_projects)} 기타")
 
     return {
         "career_history": {
