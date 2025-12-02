@@ -1019,8 +1019,12 @@ def get_final_report_with_llm(
         return _build_report_from_filtered(step2_data, [], step2_data, [])
 
     # Build filter criteria from checked rules
+    print(f"[Step3] Checked rules: {checked_rules}")
     filter_criteria = _extract_filter_criteria(checked_rules)
     print(f"[Step3] Filter criteria: {filter_criteria}")
+    print(f"[Step3] construction_types={filter_criteria.get('construction_types')}")
+    print(f"[Step3] roles={filter_criteria.get('roles')}")
+    print(f"[Step3] job_fields={filter_criteria.get('job_fields')}")
 
     # Convert to DataFrame for easier processing
     df = pd.DataFrame(step2_data)
@@ -1053,9 +1057,16 @@ def get_final_report_with_llm(
     other_projects = []
     applied_rules_display = []
 
+    debug_count = 0
     for idx, row in df.iterrows():
         row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
         match_result = _check_project_matches_criteria(row_dict, filter_criteria)
+
+        # Debug first 5 records
+        if debug_count < 5:
+            print(f"[DEBUG] Record {idx}: is_relevant={match_result['is_relevant']}, criteria_checks={match_result.get('criteria_checks', {})}")
+            print(f"        project_type='{row.get('project_type', '')}', assigned_task='{row.get('assigned_task', '')}', job_field='{row.get('job_field', '')}'")
+            debug_count += 1
 
         if match_result["is_relevant"]:
             relevant_projects.append({
@@ -1207,8 +1218,7 @@ def _check_project_matches_criteria(
 
     Mapping Logic (ALL selected criteria must match):
     1. 기간 -> 인정일/참여일 (informational only, doesn't filter)
-    3. 공사종류 -> Must match if selected
-    3.1. 세부공종 -> Must match if selected (AND with 공사종류)
+    3. 공종 -> Must match if selected
     4. 담당업무 -> Must match if selected
     5. 직무분야 -> Must match if selected
 
@@ -1261,7 +1271,7 @@ def _check_project_matches_criteria(
             if any(kw in all_text for kw in civil_keywords):
                 job_field = "토목"
 
-    # 3. Check construction type (공사종류) - REQUIRED if selected
+    # 3. Check construction type (공종) - REQUIRED if selected
     # Search in: project_type, project_name, project_overview
     if criteria.get("construction_types"):
         matched = matches_keywords(project_type, criteria["construction_types"]) or \
@@ -1273,19 +1283,6 @@ def _check_project_matches_criteria(
                          get_matched_keyword(project_name, criteria["construction_types"]) or \
                          get_matched_keyword(project_overview, criteria["construction_types"])
             matched_rules.append(f"공종: {matched_kw}")
-
-    # 3.1. Check detail types (세부공종) - REQUIRED if selected (AND with 공종)
-    # Search in: project_type, project_name, project_overview
-    if criteria.get("detail_types"):
-        matched = matches_keywords(project_type, criteria["detail_types"]) or \
-                  matches_keywords(project_name, criteria["detail_types"]) or \
-                  matches_keywords(project_overview, criteria["detail_types"])
-        criteria_checks["detail_type"] = matched
-        if matched:
-            matched_kw = get_matched_keyword(project_type, criteria["detail_types"]) or \
-                         get_matched_keyword(project_name, criteria["detail_types"]) or \
-                         get_matched_keyword(project_overview, criteria["detail_types"])
-            matched_rules.append(f"세부공종: {matched_kw}")
 
     # 4. Check roles (담당업무) - REQUIRED if selected
     # Search in: assigned_task, position, and also project_overview (sometimes role is embedded there)
@@ -1316,13 +1313,14 @@ def _check_project_matches_criteria(
             matched_kw = get_matched_keyword(job_field, criteria["job_fields"])
             matched_rules.append(f"직무분야: {matched_kw}")
 
-    # 6. Check specialty fields (전문분야) - REQUIRED if selected
-    if criteria.get("specialty_fields"):
-        matched = matches_keywords(specialty, criteria["specialty_fields"])
-        criteria_checks["specialty"] = matched
-        if matched:
-            matched_kw = get_matched_keyword(specialty, criteria["specialty_fields"])
-            matched_rules.append(f"전문분야: {matched_kw}")
+    # 6. Check specialty fields (전문분야) - DISABLED
+    # Only filter by 공종, 담당업무, 직무분야
+    # if criteria.get("specialty_fields"):
+    #     matched = matches_keywords(specialty, criteria["specialty_fields"])
+    #     criteria_checks["specialty"] = matched
+    #     if matched:
+    #         matched_kw = get_matched_keyword(specialty, criteria["specialty_fields"])
+    #         matched_rules.append(f"전문분야: {matched_kw}")
 
     # Determine if project is relevant using AND logic
     # All selected criteria must match
@@ -1335,7 +1333,8 @@ def _check_project_matches_criteria(
 
     return {
         "is_relevant": is_relevant,
-        "matched_rules": matched_rules if is_relevant else []
+        "matched_rules": matched_rules if is_relevant else [],
+        "criteria_checks": criteria_checks  # For debugging
     }
 
 

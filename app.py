@@ -67,29 +67,35 @@ if st.session_state.step == 1:
         st.info(f"**기술인:** {norm.get('engineer_name')} | **직무:** {norm.get('role')}")
         st.markdown("---")
         
-        # RENDER LOOP
+        # RENDER LOOP - Editable checkboxes
         for sec_key, section in layout.items():
             st.subheader(section.get("title", sec_key))
-            
+
             if "questions" in section:
                 for q_idx, question in enumerate(section["questions"]):
                     st.markdown(f"**{question['title']}**")
                     options = question.get("options", [])
                     cols = st.columns(4)
-                    
+
                     for i, opt in enumerate(options):
                         rule_id = opt.get('rule_id') or opt.get('id')
                         rule_key = f"rule__{rule_id}"
                         is_checked = rules.get(rule_key, False)
                         widget_key = f"{sec_key}_{q_idx}_{i}_{rule_id}"
-                        
-                        cols[i % 4].checkbox(opt['label'], value=is_checked, key=widget_key, disabled=True)
+
+                        # Editable checkbox - update session state on change
+                        new_value = cols[i % 4].checkbox(opt['label'], value=is_checked, key=widget_key)
+                        if new_value != is_checked:
+                            st.session_state.step1_rules[rule_key] = new_value
                     st.markdown("")
             st.markdown("---")
 
-        if st.button("다음 단계로 (Next)"):
-            st.session_state.step = 2
-            st.rerun()
+        # Next button on the right
+        col_left, col_right = st.columns([4, 1])
+        with col_right:
+            if st.button("다음 단계로 (Next)"):
+                st.session_state.step = 2
+                st.rerun()
 
 
 
@@ -152,13 +158,17 @@ if st.session_state.step == 2:
         
         st.dataframe(disp, use_container_width=True)
 
-        if st.button("Next → Step 3"):
-            st.session_state.step = 3
+    # Back on left, Next on right
+    col_left, col_right = st.columns([1, 1])
+    with col_left:
+        if st.button("← Back", key="step2_back"):
+            st.session_state.step = 1
             st.rerun()
-            
-    if st.button("Back"):
-        st.session_state.step = 1
-        st.rerun()
+    with col_right:
+        if st.session_state.step2_records:
+            if st.button("Next → Step 3", key="step2_next"):
+                st.session_state.step = 3
+                st.rerun()
 
 
 
@@ -223,29 +233,16 @@ elif st.session_state.step == 3:
         applied_rules = h.get('applied_rules', [])
 
         if filter_conditions or applied_rules:
-            # Show filter conditions in a structured way
+            # Show filter conditions in a structured way (공종, 담당업무, 직무분야)
             filter_cols = st.columns(3)
 
             with filter_cols[0]:
-                if filter_conditions.get('date_type'):
-                    date_label = "참여일" if filter_conditions['date_type'] == 'participation' else "인정일"
-                    st.markdown(f"**기간 기준:** {date_label}")
-
-                if filter_conditions.get('client_filter'):
-                    client_label = "제2조6항 (공공)" if filter_conditions['client_filter'] == 'public' else "민간"
-                    st.markdown(f"**발주처:** {client_label}")
-
-            with filter_cols[1]:
                 if filter_conditions.get('construction_types'):
                     st.markdown(f"**공종:** {', '.join(filter_conditions['construction_types'])}")
+                else:
+                    st.markdown("**공종:** -")
 
-                if filter_conditions.get('detail_types'):
-                    st.markdown(f"**세부공종:** {', '.join(filter_conditions['detail_types'])}")
-
-            with filter_cols[2]:
-                if filter_conditions.get('job_fields'):
-                    st.markdown(f"**직무분야:** {', '.join(filter_conditions['job_fields'])}")
-
+            with filter_cols[1]:
                 if filter_conditions.get('roles'):
                     roles_display = ', '.join(filter_conditions['roles'][:5])
                     if len(filter_conditions.get('roles', [])) > 5:
@@ -253,6 +250,14 @@ elif st.session_state.step == 3:
                     if filter_conditions.get('include_blank_duty'):
                         roles_display += " (빈칸 허용)"
                     st.markdown(f"**담당업무:** {roles_display}")
+                else:
+                    st.markdown("**담당업무:** -")
+
+            with filter_cols[2]:
+                if filter_conditions.get('job_fields'):
+                    st.markdown(f"**직무분야:** {', '.join(filter_conditions['job_fields'])}")
+                else:
+                    st.markdown("**직무분야:** -")
 
             # Show applied rules summary
             if applied_rules:
@@ -322,12 +327,11 @@ elif st.session_state.step == 3:
             else:
                 st.caption("실적 없음")
 
-    if st.button("처음으로 (Restart)"):
-        reset_app()
-        st.rerun()
-    
-    st.button("← Back", on_click=prev_step)
-    # Back button is handled in the sidebar or main flow usually, but can be added here
-    # if st.button("← Back"): 
-    #     st.session_state.step = 2
-    #     st.rerun()
+    # Back on left, Restart on right
+    col_left, col_right = st.columns([1, 1])
+    with col_left:
+        st.button("← Back", on_click=prev_step, key="step3_back")
+    with col_right:
+        if st.button("처음으로 (Restart)", key="step3_restart"):
+            reset_app()
+            st.rerun()

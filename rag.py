@@ -125,7 +125,16 @@ def _call_ollama(prompt: str) -> str:
     print(f"[RAG] Calling Ollama: {url} / model={OLLAMA_MODEL}")
     try:
         resp = requests.post(url, json=payload, timeout=300)
-        return resp.json().get("message", {}).get("content", "")
+        if resp.status_code != 200:
+            print(f"[RAG] ERROR: Ollama returned status {resp.status_code}: {resp.text[:500]}")
+            return "{}"
+        try:
+            json_resp = resp.json()
+        except Exception as parse_err:
+            print(f"[RAG] ERROR: Failed to parse Ollama response as JSON: {parse_err}")
+            print(f"[RAG] Raw response: {resp.text[:500]}")
+            return "{}"
+        return json_resp.get("message", {}).get("content", "")
     except Exception as e:
         print(f"[RAG] ERROR: Failed to call Ollama: {e}")
         return "{}"
@@ -284,7 +293,7 @@ def get_step1_data(query: str, top_k: int = 50):
         docs = vs.similarity_search(query, k=top_k)
         context = "\n\n".join([d.page_content for d in docs])
 
-        # YOUR EXACT PROMPT LOGIC
+        # Improved prompt with specific vocabulary guidance
         prompt = f"""
         당신은 한국 건설/토목 경력 서류를 읽고 **하나의 종합적인 프로젝트 이력**을 만들어내는 도우미입니다.
 
@@ -299,6 +308,7 @@ def get_step1_data(query: str, top_k: int = 50):
         요구사항:
         - 각 필드에 대해 가장 정확하고 포괄적인 정보를 찾아서 채워주세요.
         - **복수 선택(List)** 가능: 해당되는 값이 여러 개이면 배열(list)로 모두 포함합니다.
+        - 문서에서 명시적으로 언급된 값만 포함하세요. 추측하지 마세요.
 
         필드 정의:
         - "project_name": string (가장 정확한 공사명)
@@ -306,24 +316,47 @@ def get_step1_data(query: str, top_k: int = 50):
         - "clients": string[] (문서에 등장하는 모든 발주처 리스트)
         - "start_date": string (YYYY-MM-DD)
         - "end_date": string (YYYY-MM-DD)
-        - "original_fields": string[] (주요 공종/분야 리스트 예: ["하수도", "상수도"])
+        - "original_fields": string[] (공종/분야 리스트 - 아래 허용 값 중에서만 선택)
         - "primary_original_field": string (핵심 공종 1개)
-        - "roles": string[] (모든 담당업무 리스트 예: ["건설사업관리(기술지원)", "감리"])
+        - "roles": string[] (담당업무 리스트 - 아래 허용 값 중에서만 선택)
         - "primary_role": string (주된 담당업무 1개)
         - "engineer_name": string (기술인 성명)
+
+        **original_fields 허용 값 (공종):**
+        도로, 하천, 상수도, 하수도, 철도, 단지, 항만, 군부대시설, 조경, 기타토목, 전력구, 공항, 교량, 터널, 상하수도
+
+        **roles 허용 값 (담당업무):**
+        건설사업관리(기술지원), 시공, 감리, 시공감리, 건설사업관리(상주), 건설사업관리, 건설사업관리(설계단계),
+        감독, 관리감독, 감독권한대행, 공사감독, 설계감독, 시공총괄, 현장공무, 현장총괄, 현장총괄계획, 계획,
+        시험검사, 시험, 검사, 유지관리, 설계, 기본설계, 실시설계, 타당성조사, 기술자문, 안전점검, 정밀안전진단
+
+        규칙:
+        - original_fields는 위 허용 값 중에서만 선택하세요. 프로젝트명에 "상수도", "하수도" 등이 포함되면 해당 공종을 선택합니다.
+        - roles는 위 허용 값 중에서만 선택하세요. 문서에서 "설계", "감리", "시공" 등의 키워드를 찾아 매칭합니다.
+        - 문서에서 찾을 수 없는 경우 빈 배열 []을 사용하세요.
 
         출력 형식(중요):
         - 반드시 JSON 객체({{ ... }}) 하나만 출력합니다.
         """
         
         raw_text = _call_ollama(prompt)
+
+        if not raw_text or raw_text == "{}":
+            print("[RAG] Step 1: Empty response from Ollama")
+            return {}
+
+        print(f"[RAG] Step 1: Got {len(raw_text)} chars from Ollama")
+
         sanitized = re.sub(r"```json|```", "", raw_text).strip()
-        
+
         # Find JSON
         match = re.search(r'\{.*\}', sanitized, re.DOTALL)
         if match:
             sanitized = match.group(0)
-        
+        else:
+            print(f"[RAG] Step 1: No JSON object found in response: {sanitized[:200]}")
+            return {}
+
         data = json.loads(sanitized)
         if isinstance(data, dict): return data
         if isinstance(data, list) and data: return data[0]
@@ -530,7 +563,7 @@ def get_raw_project_data(query: str, top_k: int = 10) -> Dict[str, Any]:
         for i, d in enumerate(docs)
     )
 
-    # --- THIS IS YOUR NEW, UPDATED PROMPT ---
+    # --- Improved prompt with strict vocabulary ---
     prompt = f"""
         당신은 한국 건설/토목 경력 서류를 읽고 **하나의 종합적인 프로젝트 이력**을 만들어내는 도우미입니다.
 
@@ -545,33 +578,30 @@ def get_raw_project_data(query: str, top_k: int = 10) -> Dict[str, Any]:
         요구사항:
         - 모든 컨텍스트를 종합하여 **단 하나의 JSON 객체**를 출력합니다.
         - 각 필드에 대해 가장 정확하고 포괄적인 정보를 찾아서 채워주세요.
-        - 일부 항목은 **여러 개 선택(복수 선택)** 이 가능하므로, 해당되는 값이 여러 개이면 **배열(list)** 로 모두 포함합니다.
+        - 문서에서 명시적으로 언급된 값만 포함하세요. 추측하지 마세요.
 
         필드 정의:
-        - "project_name": string  
-        - 가장 정확한 전체 공사명 (단일 값)
-        - "client": string  
-        - 발주처 이름 (단일 값이 가장 자연스러우나, 복수라면 대표 발주처를 선택)
-        - "start_date": string  
-        - 가장 이른 시작일, YYYY-MM-DD 형식 (모르면 ""(빈 문자열))
-        - "end_date": string  
-        - 가장 늦은 종료일, YYYY-MM-DD 형식 (모르면 ""(빈 문자열))
+        - "project_name": string (가장 정확한 전체 공사명)
+        - "client": string (대표 발주처)
+        - "start_date": string (YYYY-MM-DD 형식, 모르면 "")
+        - "end_date": string (YYYY-MM-DD 형식, 모르면 "")
+        - "original_fields": string[] (공종/분야 리스트 - 아래 허용 값 중에서만 선택)
+        - "primary_original_field": string (핵심 공종 1개)
+        - "roles": string[] (담당업무 리스트 - 아래 허용 값 중에서만 선택)
+        - "primary_role": string (주된 담당업무 1개)
 
-        - "original_fields": string[]  
-        - 해당 프로젝트가 속하는 모든 주요 공종/분야 (예: ["하수도", "상수도", "수자원개발"])
-        - "primary_original_field": string  
-        - 위 original_fields 중에서 **가장 핵심적인 1개** (예: "하수도")
+        **original_fields 허용 값 (공종):**
+        도로, 하천, 상수도, 하수도, 철도, 단지, 항만, 군부대시설, 조경, 기타토목, 전력구, 공항, 교량, 터널, 상하수도
 
-        - "roles": string[]  
-        - 문서에서 확인되는 모든 담당업무 (예: ["건설사업관리(기술지원)", "시공감리"])
-        - "primary_role": string  
-        - 위 roles 중에서 **가장 주된 담당업무 1개** (예: "건설사업관리(기술지원)")
+        **roles 허용 값 (담당업무):**
+        건설사업관리(기술지원), 시공, 감리, 시공감리, 건설사업관리(상주), 건설사업관리, 건설사업관리(설계단계),
+        감독, 관리감독, 감독권한대행, 공사감독, 설계감독, 시공총괄, 현장공무, 현장총괄, 현장총괄계획, 계획,
+        시험검사, 시험, 검사, 유지관리, 설계, 기본설계, 실시설계, 타당성조사, 기술자문, 안전점검, 정밀안전진단
 
-        작성 규칙:
-        - 날짜를 알 수 없으면 ""(빈 문자열)로 둡니다.
-        - 공종/담당업무는 문서 내용과 가장 가까운 표현을 사용하되,
-        문장형이 아닌 **짧은 라벨 형태**로 작성합니다. (예: "건설사업관리(기술지원)", "하수도")
-        - 여러 값이 명확히 보이면 반드시 original_fields, roles에 **모두 포함**하세요.
+        규칙:
+        - original_fields는 위 허용 값 중에서만 선택하세요. 프로젝트명에 "상수도", "하수도" 등이 포함되면 해당 공종을 선택합니다.
+        - roles는 위 허용 값 중에서만 선택하세요. 문서에서 "설계", "감리", "시공" 등의 키워드를 찾아 매칭합니다.
+        - 문서에서 찾을 수 없는 경우 빈 배열 []을 사용하세요.
 
         출력 형식(중요):
         - 반드시 JSON 객체({{ ... }}) 하나만 출력합니다.
@@ -585,10 +615,10 @@ def get_raw_project_data(query: str, top_k: int = 10) -> Dict[str, Any]:
         "client": "화순군",
         "start_date": "2023-01-01",
         "end_date": "2025-12-31",
-        "original_fields": ["상수도", "하수도", "수자원개발"],
-        "primary_original_field": "하수도",
-        "roles": ["건설사업관리(기술지원)", "시공감리"],
-        "primary_role": "건설사업관리(기술지원)"
+        "original_fields": ["상수도", "하수도"],
+        "primary_original_field": "상수도",
+        "roles": ["설계", "감리"],
+        "primary_role": "설계"
         }}
         """
 
