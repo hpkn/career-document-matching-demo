@@ -6,8 +6,27 @@ import requests
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from openai import OpenAI
-from config import STEP1_INDEX_DIR, OLLAMA_BASE_URL, OLLAMA_MODEL, STEP2_INDEX_DIR
+from config import STEP1_INDEX_DIR, OLLAMA_BASE_URL, OLLAMA_MODEL, STEP2_INDEX_DIR, IS_PRODUCTION, GPU_DEVICE
 from datetime import datetime
+
+
+def _get_embedding_device():
+    """Get the appropriate device for embeddings based on environment."""
+    if IS_PRODUCTION:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                print(f"[RAG] Production mode: Using GPU ({GPU_DEVICE})")
+                return GPU_DEVICE
+            else:
+                print("[RAG] Production mode: CUDA not available, falling back to CPU")
+                return "cpu"
+        except ImportError:
+            print("[RAG] Production mode: PyTorch not installed, using CPU")
+            return "cpu"
+    else:
+        return "cpu"
+
 
 def warn(msg: str):
     print(f"[WARN] {msg}")
@@ -103,9 +122,10 @@ def validate_row(row):
 def _get_vectorstore(index_path):
     """Loads the FAISS index from the specific path."""
     print(f"[RAG] Loading FAISS index from: {index_path}") # Debug print
+    device = _get_embedding_device()
     embeddings = HuggingFaceEmbeddings(
         model_name="jhgan/ko-sroberta-multitask",
-        model_kwargs={"device": "cpu"}
+        model_kwargs={"device": device}
     )
     return FAISS.load_local(str(index_path), embeddings, allow_dangerous_deserialization=True)
 
@@ -533,9 +553,10 @@ def process_step2_text(pages_text: list):
 
 def _load_vectorstore(INDEX) -> FAISS:
     print(f"[RAG] Loading FAISS index from: {INDEX}")
+    device = _get_embedding_device()
     embeddings = HuggingFaceEmbeddings(
         model_name="jhgan/ko-sroberta-multitask",
-        model_kwargs={"device": "cpu"},
+        model_kwargs={"device": device},
     )
     vectorstore = FAISS.load_local(
         folder_path=str(INDEX),

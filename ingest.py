@@ -212,12 +212,34 @@ def err(msg: str) -> None:
 
 
 # --- Common Builder ---
+def _get_embedding_device():
+    """Get the appropriate device for embeddings based on environment."""
+    from config import IS_PRODUCTION, GPU_DEVICE
+
+    if IS_PRODUCTION:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                print(f"[INGEST] Production mode: Using GPU ({GPU_DEVICE})")
+                return GPU_DEVICE
+            else:
+                print("[INGEST] Production mode: CUDA not available, falling back to CPU")
+                return "cpu"
+        except ImportError:
+            print("[INGEST] Production mode: PyTorch not installed, using CPU")
+            return "cpu"
+    else:
+        print("[INGEST] Development mode: Using CPU")
+        return "cpu"
+
+
 def _build_faiss_index(docs, save_path):
     if not docs: return False
 
+    device = _get_embedding_device()
     embeddings = HuggingFaceEmbeddings(
         model_name="jhgan/ko-sroberta-multitask",
-        model_kwargs={"device": "cpu"}
+        model_kwargs={"device": device}
     )
 
     splitter = RecursiveCharacterTextSplitter(

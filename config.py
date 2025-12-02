@@ -75,7 +75,20 @@ STEP3_SKIP_LLM = os.getenv("STEP3_SKIP_LLM", "true").lower() == "true"
 # Set to 1 for sequential processing (safest)
 STEP3_LLM_WORKERS = int(os.getenv("STEP3_LLM_WORKERS", "4"))
 
+# ---------------------------------------------------------
+# Environment Settings
+# ---------------------------------------------------------
+# Set to "production" for GPU-accelerated processing
+# Set to "development" for CPU-only processing (default)
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+IS_PRODUCTION = ENVIRONMENT == "production"
+
+# GPU device for production (cuda:0, cuda:1, etc.)
+GPU_DEVICE = os.getenv("GPU_DEVICE", "cuda:0")
+
 # You can override with:
+# export ENVIRONMENT=production
+# export GPU_DEVICE=cuda:0
 # export OLLAMA_MODEL="gemma:4b"
 # export OLLAMA_MODEL="llama3:13b"
 # export OLLAMA_MODEL_STEP3="llama3:8b"
