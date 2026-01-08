@@ -76,9 +76,44 @@ Access at: **http://localhost:8502**
 
 ## Production Deployment
 
+### Deploying to Staging Server
+
+**First-time deployment** (switches from Streamlit to Flask):
+```bash
+# On the staging server
+cd /home/rsteam/repositories/career-document-matching-demo
+git pull
+chmod +x deploy_to_staging.sh
+./deploy_to_staging.sh
+```
+
+**Subsequent updates** (after code changes):
+```bash
+# On the staging server
+cd /home/rsteam/repositories/career-document-matching-demo
+git pull
+./fix_and_restart.sh
+```
+
 ### Online Service
-- Running as systemd service: `sudo systemctl reload career-demo.service`
+- Running as systemd service: `sudo systemctl status career-demo.service`
 - Access URL: https://ai-test.rs-team.com
+- Service file: `/etc/systemd/system/career-demo.service`
+
+### Service Management Commands
+```bash
+# View logs
+sudo journalctl -u career-demo.service -f
+
+# Restart service
+sudo systemctl restart career-demo.service
+
+# Stop service
+sudo systemctl stop career-demo.service
+
+# Check status
+sudo systemctl status career-demo.service
+```
 
 ## API Endpoints
 

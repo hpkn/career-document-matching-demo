@@ -1,0 +1,23 @@
+[Unit]
+Description=PQ Analysis Flask Web Server
+After=network.target
+
+[Service]
+Type=simple
+User=rsteam
+Group=rsteam
+WorkingDirectory=/home/rsteam/repositories/career-document-matching-demo
+Environment="PATH=/home/rsteam/repositories/career-document-matching-demo/.venv/bin"
+ExecStart=/home/rsteam/repositories/career-document-matching-demo/.venv/bin/python server.py
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=career-demo
+
+[Install]
+WantedBy=multi-user.target
