@@ -1432,18 +1432,30 @@ def get_final_report_with_llm(
 
     # Calculate total career days from all projects
     total_days = 0
-    for proj in relevant_projects + other_projects:
+    relevant_days = 0
+
+    for proj in relevant_projects:
         # Extract days from "인정일수" field (format: "123일" or "123일 (적용: 100일)")
+        days_str = str(proj.get("인정일수", "0"))
+        match = re.search(r'(\d+)일', days_str)
+        if match:
+            days = int(match.group(1))
+            relevant_days += days
+            total_days += days
+
+    for proj in other_projects:
         days_str = str(proj.get("인정일수", "0"))
         match = re.search(r'(\d+)일', days_str)
         if match:
             total_days += int(match.group(1))
 
     total_years = total_days / 365.0
+    relevant_years = relevant_days / 365.0
     total_career = f"{total_years:.1f}년 ({total_days}일)"
+    relevant_career = f"{relevant_years:.1f}년 ({relevant_days}일)"
 
     print(f"[Step3 LLM] Classification complete: {len(relevant_projects)} 해당분야, {len(other_projects)} 기타")
-    print(f"[Step3 LLM] Total career: {total_career}")
+    print(f"[Step3 LLM] Total career: {total_career}, Relevant career: {relevant_career}")
 
     return {
         "career_history": {
@@ -1452,6 +1464,7 @@ def get_final_report_with_llm(
                 "name": engineer_name,
                 "field": primary_field,
                 "total_career": total_career,
+                "relevant_career": relevant_career,
                 "filter_conditions": filter_criteria,
                 "applied_rules": applied_rules_summary,
                 "summary": {
@@ -1727,15 +1740,27 @@ def _build_report_from_filtered(
 
     # Calculate total career days from all projects
     total_days = 0
-    for proj in relevant + other:
+    relevant_days = 0
+
+    for proj in relevant:
         # Extract days from "인정일수" field (format: "123일" or "123일 (적용: 100일)")
+        days_str = str(proj.get("인정일수", "0"))
+        match = re.search(r'(\d+)일', days_str)
+        if match:
+            days = int(match.group(1))
+            relevant_days += days
+            total_days += days
+
+    for proj in other:
         days_str = str(proj.get("인정일수", "0"))
         match = re.search(r'(\d+)일', days_str)
         if match:
             total_days += int(match.group(1))
 
     total_years = total_days / 365.0
+    relevant_years = relevant_days / 365.0
     total_career = f"{total_years:.1f}년 ({total_days}일)"
+    relevant_career = f"{relevant_years:.1f}년 ({relevant_days}일)"
 
     return {
         "career_history": {
@@ -1744,6 +1769,7 @@ def _build_report_from_filtered(
                 "name": engineer_name,
                 "field": primary_field,
                 "total_career": total_career,
+                "relevant_career": relevant_career,
                 "applied_rules": applied_rules,
                 "summary": {
                     "relevant_count": len(relevant),
