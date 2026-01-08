@@ -1371,10 +1371,24 @@ def get_final_report_with_llm(
     except (KeyError, IndexError):
         engineer_name = "Unknown"
 
+    # Get primary field with better fallback logic
+    primary_field = "토목"  # Default fallback
     try:
-        df['clean_field'] = df['job_field'].astype(str).apply(lambda x: x.split()[0])
-        primary_field = df['clean_field'].mode()[0]
-    except (KeyError, IndexError):
+        if 'job_field' in df.columns:
+            # Clean and extract primary field (first word)
+            df['clean_field'] = df['job_field'].astype(str).str.strip().apply(lambda x: x.split()[0] if x and x != 'nan' else '')
+            # Filter out empty values
+            valid_fields = df['clean_field'][df['clean_field'] != ''].dropna()
+            if len(valid_fields) > 0:
+                # Get most common value
+                mode_result = valid_fields.mode()
+                if len(mode_result) > 0:
+                    primary_field = mode_result[0]
+                else:
+                    # If mode fails, get first valid value
+                    primary_field = valid_fields.iloc[0]
+    except Exception as e:
+        print(f"[Step3 LLM] Warning: Could not determine primary field, using default: {e}")
         primary_field = "토목"
 
     # Convert DataFrame to list of dicts for LLM classification
@@ -1685,15 +1699,43 @@ def _build_report_from_filtered(
     """Build report structure from filtered data."""
     df = pd.DataFrame(step2_data) if step2_data else pd.DataFrame()
 
+    # Get engineer name
     try:
         engineer_name = df['person_name'].mode()[0] if not df.empty else "Unknown"
     except (KeyError, IndexError):
         engineer_name = "Unknown"
 
+    # Get primary field with better fallback logic
+    primary_field = "토목"  # Default fallback
     try:
-        primary_field = df['job_field'].mode()[0] if not df.empty else "토목"
-    except (KeyError, IndexError):
+        if not df.empty and 'job_field' in df.columns:
+            # Clean and extract primary field (first word)
+            df['clean_field'] = df['job_field'].astype(str).str.strip().apply(lambda x: x.split()[0] if x and x != 'nan' else '')
+            # Filter out empty values
+            valid_fields = df['clean_field'][df['clean_field'] != ''].dropna()
+            if len(valid_fields) > 0:
+                # Get most common value
+                mode_result = valid_fields.mode()
+                if len(mode_result) > 0:
+                    primary_field = mode_result[0]
+                else:
+                    # If mode fails, get first valid value
+                    primary_field = valid_fields.iloc[0]
+    except Exception as e:
+        print(f"[_build_report_from_filtered] Warning: Could not determine primary field, using default: {e}")
         primary_field = "토목"
+
+    # Calculate total career days from all projects
+    total_days = 0
+    for proj in relevant + other:
+        # Extract days from "인정일수" field (format: "123일" or "123일 (적용: 100일)")
+        days_str = str(proj.get("인정일수", "0"))
+        match = re.search(r'(\d+)일', days_str)
+        if match:
+            total_days += int(match.group(1))
+
+    total_years = total_days / 365.0
+    total_career = f"{total_years:.1f}년 ({total_days}일)"
 
     return {
         "career_history": {
@@ -1701,6 +1743,7 @@ def _build_report_from_filtered(
                 "division": "책임건설사업관리기술인",
                 "name": engineer_name,
                 "field": primary_field,
+                "total_career": total_career,
                 "applied_rules": applied_rules,
                 "summary": {
                     "relevant_count": len(relevant),
@@ -1725,17 +1768,31 @@ def get_final_report_json(step2_data: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     df = pd.DataFrame(step2_data)
 
-    # Detect primary job field (토목 most common)
-    try:
-        df['clean_field'] = df['job_field'].astype(str).apply(lambda x: x.split()[0])
-        primary_field = df['clean_field'].mode()[0]
-    except:
-        primary_field = "토목"
-
+    # Get engineer name
     try:
         engineer_name = df['person_name'].mode()[0]
-    except:
+    except (KeyError, IndexError):
         engineer_name = "Unknown"
+
+    # Detect primary job field with better fallback logic
+    primary_field = "토목"  # Default fallback
+    try:
+        if 'job_field' in df.columns:
+            # Clean and extract primary field (first word)
+            df['clean_field'] = df['job_field'].astype(str).str.strip().apply(lambda x: x.split()[0] if x and x != 'nan' else '')
+            # Filter out empty values
+            valid_fields = df['clean_field'][df['clean_field'] != ''].dropna()
+            if len(valid_fields) > 0:
+                # Get most common value
+                mode_result = valid_fields.mode()
+                if len(mode_result) > 0:
+                    primary_field = mode_result[0]
+                else:
+                    # If mode fails, get first valid value
+                    primary_field = valid_fields.iloc[0]
+    except Exception as e:
+        print(f"[Step3 JSON] Warning: Could not determine primary field, using default: {e}")
+        primary_field = "토목"
 
     relevant_projects = []
     other_projects = []

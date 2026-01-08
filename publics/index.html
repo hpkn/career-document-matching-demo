@@ -633,6 +633,28 @@
             `;
             container.appendChild(headerDiv);
 
+            // Applied Conditions Section
+            if (header.applied_rules && header.applied_rules.length > 0) {
+                const conditionsDiv = document.createElement('div');
+                conditionsDiv.className = 'bg-blue-50 border border-blue-200 p-4 rounded-lg mb-6';
+                conditionsDiv.innerHTML = `
+                    <h3 class="text-sm font-bold text-blue-800 mb-2">📋 적용된 평가 조건</h3>
+                    <div class="flex flex-wrap gap-2">
+                        ${header.applied_rules.map(rule =>
+                            `<span class="px-3 py-1 bg-white border border-blue-300 rounded-full text-xs text-blue-700">${rule}</span>`
+                        ).join('')}
+                    </div>
+                `;
+                container.appendChild(conditionsDiv);
+            } else {
+                const conditionsDiv = document.createElement('div');
+                conditionsDiv.className = 'bg-slate-50 border border-slate-200 p-4 rounded-lg mb-6';
+                conditionsDiv.innerHTML = `
+                    <p class="text-sm text-slate-600">📋 적용된 평가 조건: 없음 (전체 경력 표시)</p>
+                `;
+                container.appendChild(conditionsDiv);
+            }
+
             // Tables Section
             const tablesDiv = document.createElement('div');
             tablesDiv.className = 'grid grid-cols-2 gap-6';
