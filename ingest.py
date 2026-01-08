@@ -1416,7 +1416,20 @@ def get_final_report_with_llm(
     # Build applied rules description for display
     applied_rules_summary = list(set(applied_rules_display))
 
+    # Calculate total career days from all projects
+    total_days = 0
+    for proj in relevant_projects + other_projects:
+        # Extract days from "인정일수" field (format: "123일" or "123일 (적용: 100일)")
+        days_str = str(proj.get("인정일수", "0"))
+        match = re.search(r'(\d+)일', days_str)
+        if match:
+            total_days += int(match.group(1))
+
+    total_years = total_days / 365.0
+    total_career = f"{total_years:.1f}년 ({total_days}일)"
+
     print(f"[Step3 LLM] Classification complete: {len(relevant_projects)} 해당분야, {len(other_projects)} 기타")
+    print(f"[Step3 LLM] Total career: {total_career}")
 
     return {
         "career_history": {
@@ -1424,6 +1437,7 @@ def get_final_report_with_llm(
                 "division": "책임건설사업관리기술인",
                 "name": engineer_name,
                 "field": primary_field,
+                "total_career": total_career,
                 "filter_conditions": filter_criteria,
                 "applied_rules": applied_rules_summary,
                 "summary": {
