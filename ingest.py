@@ -1649,8 +1649,8 @@ def _check_project_matches_criteria(
     # Determine if project is relevant using AND logic
     # All selected criteria must match
     if not criteria_checks:
-        # No criteria selected, nothing is relevant
-        is_relevant = False
+        # No criteria selected, everything is relevant (no filtering applied)
+        is_relevant = True
     else:
         # ALL criteria must be True (AND logic)
         is_relevant = all(criteria_checks.values())

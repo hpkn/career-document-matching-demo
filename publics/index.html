@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PQ Analysis Engine - MVP</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', 'Noto Sans KR', sans-serif; background-color: #F8FAFC; }
+
+        .custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+
+        .nav-item.active {
+            background-color: #0F172A;
+            color: #ffffff;
+            border-left: 4px solid #F59E0B;
+        }
+        .nav-item {
+            color: #94A3B8;
+            border-left: 4px solid transparent;
+        }
+        .nav-item:hover {
+            color: #F1F5F9;
+            background-color: #1E293B;
+        }
+
+        .form-checkbox {
+            appearance: none;
+            background-color: #fff;
+            margin: 0;
+            font: inherit;
+            color: currentColor;
+            width: 1.15em;
+            height: 1.15em;
+            border: 0.1em solid #cbd5e1;
+            border-radius: 0.15em;
+            display: grid;
+            place-content: center;
+        }
+        .form-checkbox::before {
+            content: "";
+            width: 0.65em;
+            height: 0.65em;
+            transform: scale(0);
+            transition: 120ms transform ease-in-out;
+            box-shadow: inset 1em 1em white;
+            transform-origin: center;
+            clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+        }
+        .form-checkbox:checked {
+            background-color: #2563EB;
+            border-color: #2563EB;
+        }
+        .form-checkbox:checked::before {
+            transform: scale(1);
+        }
+
+        .loader {
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="h-screen flex overflow-hidden">
+
+    <aside class="w-64 bg-slate-800 flex flex-col shrink-0 z-50">
+        <div class="h-16 flex items-center px-6 bg-slate-900 border-b border-slate-700">
+            <div class="w-7 h-7 rounded bg-amber-500 flex items-center justify-center text-white font-bold mr-3 shadow-sm">PQ</div>
+            <span class="text-base font-bold text-white tracking-tight">PQ Analysis</span>
+        </div>
+
+        <nav class="flex-1 py-6 space-y-1">
+            <div class="px-6 mb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Main Features</div>
+
+            <button onclick="switchView('criteria')" id="menu-criteria" class="nav-item active w-full flex items-center gap-3 px-6 py-3 text-sm font-medium transition-colors">
+                <i class="ph ph-sliders text-lg"></i>
+                <span>기준 정보 관리</span>
+            </button>
+
+            <button onclick="switchView('analysis')" id="menu-analysis" class="nav-item w-full flex items-center gap-3 px-6 py-3 text-sm font-medium transition-colors">
+                <i class="ph ph-table text-lg"></i>
+                <span>경력 데이터 분석</span>
+            </button>
+
+            <button onclick="switchView('report')" id="menu-report" class="nav-item w-full flex items-center gap-3 px-6 py-3 text-sm font-medium transition-colors">
+                <i class="ph ph-file-text text-lg"></i>
+                <span>최종 평가 리포트</span>
+            </button>
+        </nav>
+
+        <div class="p-4 border-t border-slate-700 bg-slate-900">
+            <div class="flex items-center gap-3">
+                <div class="w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center text-white text-xs">PQ</div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-xs font-medium text-white">PQ Analyst</p>
+                    <p class="text-[10px] text-slate-400">Manager</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <main class="flex-1 flex flex-col min-w-0 bg-white">
+
+        <header class="h-16 border-b border-slate-200 flex items-center justify-between px-8 bg-white shrink-0">
+            <h1 id="page-title" class="text-lg font-bold text-slate-800">기준 정보 관리</h1>
+            <div class="flex items-center gap-3">
+                <span class="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded" id="session-indicator">준비됨</span>
+            </div>
+        </header>
+
+        <div class="flex-1 overflow-hidden relative bg-slate-50/50">
+
+            <!-- View 1: Criteria Management -->
+            <div id="view-criteria" class="absolute inset-0 overflow-y-auto custom-scroll p-8">
+                <div class="max-w-5xl mx-auto">
+
+                    <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-8">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-800 mb-1">프로젝트 기준 문서 등록</h2>
+                            <p class="text-xs text-slate-500">공고문(RFP)과 평가기준서(PQ)를 업로드하여 분석 기준을 설정합니다.</p>
+                        </div>
+
+                        <div class="flex gap-4 items-center mt-4">
+                            <input type="file" id="criteria-file-input" multiple accept=".pdf" class="hidden">
+                            <button onclick="document.getElementById('criteria-file-input').click()" class="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition shadow-sm">
+                                <i class="ph ph-upload-simple text-lg"></i>
+                                <span>PDF 업로드</span>
+                            </button>
+                            <button onclick="uploadCriteria()" id="upload-criteria-btn" class="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                                <i class="ph ph-check-circle text-lg"></i>
+                                <span>분석 시작</span>
+                            </button>
+                            <div id="criteria-files-info" class="text-xs text-slate-600"></div>
+                        </div>
+                    </div>
+
+                    <div id="criteria-results" class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden hidden">
+                        <div class="bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center">
+                            <h3 class="font-bold text-slate-800 flex items-center gap-2">
+                                <i class="ph ph-sparkle text-purple-600"></i> AI 기준 추출 결과
+                            </h3>
+                            <div class="text-xs text-slate-600" id="engineer-info"></div>
+                        </div>
+
+                        <div class="p-8" id="criteria-checkboxes">
+                            <!-- Checkboxes will be dynamically inserted here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- View 2: Career Analysis -->
+            <div id="view-analysis" class="absolute inset-0 flex flex-col hidden bg-white">
+
+                <div class="p-6 bg-slate-50 border-b border-slate-200 shrink-0">
+                    <div class="w-full flex items-center justify-between">
+                        <div class="flex items-center gap-4">
+                            <h2 class="text-sm font-bold text-slate-800">경력 문서 업로드</h2>
+                        </div>
+
+                        <div class="flex items-center gap-6">
+                            <input type="file" id="career-file-input" accept=".pdf" class="hidden">
+                            <button onclick="document.getElementById('career-file-input').click()" class="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition shadow-sm">
+                                <i class="ph ph-upload-simple text-lg"></i>
+                                <span>PDF 업로드</span>
+                            </button>
+                            <button onclick="uploadCareer()" id="upload-career-btn" class="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                                <i class="ph ph-gear text-lg"></i>
+                                <span>추출 시작</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex-1 overflow-auto custom-scroll relative p-6">
+                    <div id="career-results" class="hidden">
+                        <div class="mb-4 text-sm text-slate-600">
+                            <span>추출된 데이터: <strong id="career-count">0</strong>건</span>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse bg-white rounded-lg overflow-hidden shadow">
+                                <thead class="bg-slate-100">
+                                    <tr>
+                                        <th class="py-3 px-4 border-b text-xs">No.</th>
+                                        <th class="py-3 px-4 border-b text-xs">참여기간</th>
+                                        <th class="py-3 px-4 border-b text-xs">인정일</th>
+                                        <th class="py-3 px-4 border-b text-xs">사업명</th>
+                                        <th class="py-3 px-4 border-b text-xs">발주자</th>
+                                        <th class="py-3 px-4 border-b text-xs">담당업무</th>
+                                        <th class="py-3 px-4 border-b text-xs">직위</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="career-table-body" class="divide-y divide-slate-100">
+                                    <!-- Data will be inserted here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div id="career-placeholder" class="text-center py-12 text-slate-400">
+                        <i class="ph ph-file-dashed text-6xl mb-4"></i>
+                        <p>경력 문서를 업로드하여 시작하세요</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- View 3: Report -->
+            <div id="view-report" class="absolute inset-0 overflow-y-auto custom-scroll p-8 hidden">
+                <div class="max-w-7xl mx-auto">
+                    <div class="mb-6">
+                        <button onclick="generateReport()" id="generate-report-btn" class="flex items-center gap-2 px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                            <i class="ph ph-file-text text-lg"></i>
+                            <span>최종 평가 리포트 생성</span>
+                        </button>
+                    </div>
+
+                    <div id="report-content" class="hidden">
+                        <!-- Report will be dynamically inserted here -->
+                    </div>
+
+                    <div id="report-placeholder" class="text-center py-12 text-slate-400">
+                        <i class="ph ph-file-text text-6xl mb-4"></i>
+                        <p>리포트를 생성하려면 위 버튼을 클릭하세요</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div class="bg-white p-6 rounded-lg shadow-xl flex flex-col items-center gap-3">
+            <div class="loader"></div>
+            <p class="text-slate-700 font-medium" id="loading-text">처리 중...</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';  // Same origin
+        let sessionId = localStorage.getItem('pq_session_id') || null;
+        let criteriaRules = {};
+        let careerRecords = [];
+
+        // View Switching
+        function switchView(viewName) {
+            const views = ['criteria', 'analysis', 'report'];
+            views.forEach(v => {
+                const el = document.getElementById(`view-${v}`);
+                if (v === viewName) {
+                    el.classList.remove('hidden');
+                } else {
+                    el.classList.add('hidden');
+                }
+            });
+
+            views.forEach(v => {
+                const btn = document.getElementById(`menu-${v}`);
+                if (v === viewName) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+
+            const titles = {
+                'criteria': '기준 정보 관리',
+                'analysis': '경력 데이터 분석',
+                'report': '최종 평가 리포트'
+            };
+            document.getElementById('page-title').innerText = titles[viewName];
+        }
+
+        // Show/Hide Loading
+        function showLoading(text = '처리 중...') {
+            document.getElementById('loading-text').innerText = text;
+            document.getElementById('loading-overlay').classList.remove('hidden');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-overlay').classList.add('hidden');
+        }
+
+        // Criteria File Selection
+        document.getElementById('criteria-file-input').addEventListener('change', function(e) {
+            const files = e.target.files;
+            if (files.length > 0) {
+                document.getElementById('criteria-files-info').innerText = `${files.length}개 파일 선택됨`;
+                document.getElementById('upload-criteria-btn').disabled = false;
+            }
+        });
+
+        // Upload Criteria
+        async function uploadCriteria() {
+            const fileInput = document.getElementById('criteria-file-input');
+            const files = fileInput.files;
+
+            if (files.length === 0) {
+                alert('PDF 파일을 선택해주세요.');
+                return;
+            }
+
+            showLoading('기준 문서 분석 중...');
+
+            const formData = new FormData();
+            for (let file of files) {
+                formData.append('files', file);
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/api/upload-criteria`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    sessionId = result.session_id;
+                    criteriaRules = result.data.rules || {};
+
+                    // Save session to localStorage
+                    localStorage.setItem('pq_session_id', sessionId);
+
+                    // Update UI
+                    document.getElementById('session-indicator').innerText = `세션: ${sessionId.substring(0, 8)}...`;
+                    document.getElementById('engineer-info').innerText = `${result.data.engineer_name || ''} | ${result.data.role || ''}`;
+
+                    // Render checkboxes
+                    renderCriteriaCheckboxes(result.data.layout);
+                    document.getElementById('criteria-results').classList.remove('hidden');
+
+                    alert('기준 문서 분석 완료!');
+                } else {
+                    alert('오류: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('서버 오류가 발생했습니다.');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Render Criteria Checkboxes
+        function renderCriteriaCheckboxes(layout) {
+            const container = document.getElementById('criteria-checkboxes');
+            container.innerHTML = '';
+
+            if (!layout) return;
+
+            Object.keys(layout).forEach(secKey => {
+                const section = layout[secKey];
+
+                const sectionDiv = document.createElement('div');
+                sectionDiv.className = 'mb-8';
+
+                const sectionTitle = document.createElement('h4');
+                sectionTitle.className = 'text-sm font-bold text-slate-900 mb-4 pb-2 border-b';
+                sectionTitle.innerText = section.title || secKey;
+                sectionDiv.appendChild(sectionTitle);
+
+                if (section.questions) {
+                    section.questions.forEach((question, qIdx) => {
+                        const questionDiv = document.createElement('div');
+                        questionDiv.className = 'mb-4';
+
+                        const questionTitle = document.createElement('p');
+                        questionTitle.className = 'text-xs font-semibold text-slate-700 mb-2';
+                        questionTitle.innerText = question.title;
+                        questionDiv.appendChild(questionTitle);
+
+                        const optionsGrid = document.createElement('div');
+                        optionsGrid.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3';
+
+                        question.options.forEach((opt, optIdx) => {
+                            const ruleId = opt.rule_id || opt.id;
+                            const ruleKey = `rule__${ruleId}`;
+                            const isChecked = criteriaRules[ruleKey] || false;
+
+                            const label = document.createElement('label');
+                            label.className = 'flex items-center gap-2 cursor-pointer';
+
+                            const checkbox = document.createElement('input');
+                            checkbox.type = 'checkbox';
+                            checkbox.className = 'form-checkbox';
+                            checkbox.checked = isChecked;
+                            checkbox.dataset.ruleKey = ruleKey;
+                            checkbox.addEventListener('change', updateCriteriaRule);
+
+                            const labelText = document.createElement('span');
+                            labelText.className = 'text-sm text-slate-700';
+                            labelText.innerText = opt.label;
+
+                            label.appendChild(checkbox);
+                            label.appendChild(labelText);
+                            optionsGrid.appendChild(label);
+                        });
+
+                        questionDiv.appendChild(optionsGrid);
+                        sectionDiv.appendChild(questionDiv);
+                    });
+                }
+
+                container.appendChild(sectionDiv);
+            });
+        }
+
+        // Update Criteria Rule
+        async function updateCriteriaRule(event) {
+            const ruleKey = event.target.dataset.ruleKey;
+            const isChecked = event.target.checked;
+
+            criteriaRules[ruleKey] = isChecked;
+
+            // Send update to server
+            try {
+                await fetch(`${API_BASE}/api/update-criteria`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        rules: { [ruleKey]: isChecked }
+                    })
+                });
+            } catch (error) {
+                console.error('Error updating criteria:', error);
+            }
+        }
+
+        // Career File Selection
+        document.getElementById('career-file-input').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('upload-career-btn').disabled = false;
+            }
+        });
+
+        // Upload Career
+        async function uploadCareer() {
+            if (!sessionId) {
+                alert('먼저 기준 정보를 등록해주세요.');
+                switchView('criteria');
+                return;
+            }
+
+            const fileInput = document.getElementById('career-file-input');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert('PDF 파일을 선택해주세요.');
+                return;
+            }
+
+            showLoading('경력 데이터 추출 중... (시간이 걸릴 수 있습니다)');
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('session_id', sessionId);
+
+            try {
+                const response = await fetch(`${API_BASE}/api/upload-career`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    careerRecords = result.records;
+
+                    // Update UI
+                    document.getElementById('career-count').innerText = result.count;
+                    renderCareerTable(result.records);
+                    document.getElementById('career-results').classList.remove('hidden');
+                    document.getElementById('career-placeholder').classList.add('hidden');
+
+                    alert(`경력 데이터 ${result.count}건 추출 완료!`);
+                } else {
+                    // Check if it's an invalid session error
+                    if (result.error.includes('Invalid session') || result.error.includes('session')) {
+                        alert('세션이 만료되었습니다. 기준 정보를 다시 등록해주세요.');
+                        // Clear invalid session
+                        localStorage.removeItem('pq_session_id');
+                        sessionId = null;
+                        document.getElementById('session-indicator').innerText = '준비됨';
+                        switchView('criteria');
+                    } else {
+                        alert('오류: ' + result.error);
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('서버 오류가 발생했습니다.');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Render Career Table
+        function renderCareerTable(records) {
+            const tbody = document.getElementById('career-table-body');
+            tbody.innerHTML = '';
+
+            records.forEach((record, idx) => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-50 transition-colors';
+
+                const period = `${record.participation_period_start || ''} ~ ${record.participation_period_end || ''}`;
+
+                tr.innerHTML = `
+                    <td class="py-2 px-4 text-xs text-slate-500">${idx + 1}</td>
+                    <td class="py-2 px-4 text-xs">${period}</td>
+                    <td class="py-2 px-4 text-xs text-center">${record.recognized_days || '-'}</td>
+                    <td class="py-2 px-4 text-xs font-semibold text-blue-700">${record.project_name || '-'}</td>
+                    <td class="py-2 px-4 text-xs">${record.client || '-'}</td>
+                    <td class="py-2 px-4 text-xs">${record.assigned_task || '-'}</td>
+                    <td class="py-2 px-4 text-xs">${record.position || '-'}</td>
+                `;
+
+                tbody.appendChild(tr);
+            });
+        }
+
+        // Generate Report
+        async function generateReport() {
+            if (!sessionId) {
+                alert('먼저 기준 정보를 등록해주세요.');
+                switchView('criteria');
+                return;
+            }
+
+            if (careerRecords.length === 0) {
+                alert('먼저 경력 데이터를 추출해주세요.');
+                switchView('analysis');
+                return;
+            }
+
+            showLoading('최종 평가 리포트 생성 중...');
+
+            try {
+                const response = await fetch(`${API_BASE}/api/generate-report`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    renderReport(result.report);
+                    document.getElementById('report-content').classList.remove('hidden');
+                    document.getElementById('report-placeholder').classList.add('hidden');
+
+                    alert('리포트 생성 완료!');
+                } else {
+                    // Check if it's an invalid session error
+                    if (result.error.includes('Invalid session') || result.error.includes('session')) {
+                        alert('세션이 만료되었습니다. 기준 정보를 다시 등록해주세요.');
+                        // Clear invalid session
+                        localStorage.removeItem('pq_session_id');
+                        sessionId = null;
+                        document.getElementById('session-indicator').innerText = '준비됨';
+                        switchView('criteria');
+                    } else {
+                        alert('오류: ' + result.error);
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('서버 오류가 발생했습니다.');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Render Report
+        function renderReport(report) {
+            const container = document.getElementById('report-content');
+            container.innerHTML = '';
+
+            const career = report.career_history || {};
+            const header = career.header || {};
+            const summary = header.summary || {};
+
+            // Header Section
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'bg-white p-6 rounded-xl shadow mb-6';
+            headerDiv.innerHTML = `
+                <h2 class="text-xl font-bold text-slate-800 mb-4">${header.division || '평가 결과'} | ${header.name || ''}</h2>
+                <div class="grid grid-cols-5 gap-4">
+                    <div class="text-center">
+                        <p class="text-xs text-slate-500 mb-1">성명</p>
+                        <p class="text-lg font-bold text-slate-800">${header.name || '-'}</p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-xs text-slate-500 mb-1">주 직무분야</p>
+                        <p class="text-lg font-bold text-slate-800">${header.field || '-'}</p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-xs text-slate-500 mb-1">해당분야 건수</p>
+                        <p class="text-lg font-bold text-blue-600">${summary.relevant_count || 0}</p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-xs text-slate-500 mb-1">경력기간</p>
+                        <p class="text-lg font-bold text-green-600">-</p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-xs text-slate-500 mb-1">기타 건수</p>
+                        <p class="text-lg font-bold text-slate-500">${summary.other_count || 0}</p>
+                    </div>
+                </div>
+            `;
+            container.appendChild(headerDiv);
+
+            // Tables Section
+            const tablesDiv = document.createElement('div');
+            tablesDiv.className = 'grid grid-cols-2 gap-6';
+
+            // Relevant Projects
+            const relevantDiv = document.createElement('div');
+            relevantDiv.className = 'bg-white p-6 rounded-xl shadow';
+            relevantDiv.innerHTML = `
+                <h3 class="text-lg font-bold text-slate-800 mb-4">✅ 해당분야 (${summary.relevant_count || 0}건)</h3>
+                <div class="overflow-x-auto">
+                    ${renderProjectTable(career.relevant || [])}
+                </div>
+            `;
+
+            // Other Projects
+            const otherDiv = document.createElement('div');
+            otherDiv.className = 'bg-white p-6 rounded-xl shadow';
+            otherDiv.innerHTML = `
+                <h3 class="text-lg font-bold text-slate-800 mb-4">⚪ 기타 (${summary.other_count || 0}건)</h3>
+                <div class="overflow-x-auto">
+                    ${renderProjectTable(career.other || [])}
+                </div>
+            `;
+
+            tablesDiv.appendChild(relevantDiv);
+            tablesDiv.appendChild(otherDiv);
+            container.appendChild(tablesDiv);
+        }
+
+        function renderProjectTable(projects) {
+            if (projects.length === 0) {
+                return '<p class="text-sm text-slate-400">실적 없음</p>';
+            }
+
+            let html = `
+                <table class="w-full text-xs">
+                    <thead class="bg-slate-50">
+                        <tr>
+                            <th class="py-2 px-3 text-left border-b">사업명</th>
+                            <th class="py-2 px-3 text-left border-b">인정일수</th>
+                            <th class="py-2 px-3 text-left border-b">담당업무</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            projects.forEach(proj => {
+                html += `
+                    <tr class="border-b">
+                        <td class="py-2 px-3">${proj.사업명 || proj.project_name || '-'}</td>
+                        <td class="py-2 px-3">${proj.인정일수 || proj.recognized_days || '-'}</td>
+                        <td class="py-2 px-3">${proj.담당업무 || proj.assigned_task || '-'}</td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            return html;
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Restore session indicator if session exists
+            if (sessionId) {
+                document.getElementById('session-indicator').innerText = `세션: ${sessionId.substring(0, 8)}...`;
+            }
+
+            // Check API health
+            try {
+                const response = await fetch(`${API_BASE}/api/health`);
+                const result = await response.json();
+                console.log('API Status:', result.message);
+            } catch (error) {
+                console.error('API connection failed:', error);
+                alert('서버 연결에 실패했습니다. 서버가 실행 중인지 확인해주세요.');
+            }
+        });
+    </script>
+</body>
+</html>

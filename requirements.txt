@@ -1,4 +1,6 @@
 streamlit
+flask
+flask-cors
 langchain
 langchain-core
 langchain-community
@@ -16,4 +18,4 @@ requests
 pytesseract
 PyMuPDF
 Pillow
-fitz
+pdfplumber
